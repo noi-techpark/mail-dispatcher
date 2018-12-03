@@ -56,7 +56,7 @@ module.exports = class MailDispatcher {
                     bucket: self.configuration.aws.bucket,
                     bucketPrefix: self.configuration.aws.bucketPrefix,
                     mappings: {
-                        '@default': self.configuration.forwarding.defaultRecipient
+                        '@default': self.configuration.defaultRecipient
                     }
                 }
 
