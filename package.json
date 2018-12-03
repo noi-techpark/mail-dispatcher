@@ -6,6 +6,7 @@
         "fs-extra": "^7.0.1",
         "globby": "^8.0.1",
         "retry": "*",
+        "request": "*",
         "tmp": "0.0.33",
         "winston": "*"
     }

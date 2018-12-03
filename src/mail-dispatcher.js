@@ -3,6 +3,7 @@ const AWS = require('aws-sdk')
 const child_process = require('child_process')
 const fs = require('fs-extra')
 const globby = require('globby')
+const request = require('request')
 const tmp = require('tmp')
 const winston = require('winston')
 
@@ -61,6 +62,35 @@ module.exports = class MailDispatcher {
                 }
 
                 var matches
+
+                matches = self.configuration.mappings.match(/^file:\/\/(.+)$/)
+                if (!!matches) {
+                    self.logger.log('info', 'Fetching mappings configuration from file "%s"...', matches[1])
+
+                    return callback(null, JSON.parse(fs.readFileSync(matches[1], 'utf8')))
+                }
+
+                matches = self.configuration.mappings.match(/^https?:\/\/(.+)$/)
+                if (!!matches) {
+                    self.logger.log('info', 'Fetching mappings configuration from url "%s"...', self.configuration.mappings)
+
+                    request({
+                        url: self.configuration.mappings,
+                        json: true
+                    }, (err, response, data) => {
+                        if (!err && response.statusCode === 200) {
+                            if (!data) {
+                                return callback(new Error('Invalid JSON string in response.'))
+                            }
+
+                            callback(null, data)
+                        } else if (!!err) {
+                            callback(err)
+                        } else {
+                            callback(null, [])
+                        }
+                    })
+                }
 
                 matches = self.configuration.mappings.match(/^git:\/\/(.+)$/)
                 if (!!matches) {
