@@ -119,6 +119,7 @@ module.exports = class MailDispatcher {
             domains.forEach((item) => {
                 console.log(colors.cyan('Domain: %s'), item.domain)
                 console.log('  > Status: %s', item.status === 'SUCCESS' ? colors.green('Verified') : colors.red('Pending'))
+                console.log('  > MX Record: inbound-smtp.%s.amazonaws.com', self.configuration.aws.region)
                 console.log('  > Verification Domain: _amazonses.%s', item.domain)
                 console.log('  > Verification Value (TXT): %s', item.token)
             })

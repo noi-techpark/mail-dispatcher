@@ -24,11 +24,28 @@ The following instructions will configure the environment and need to be perform
 1. Create/update repository with mappings configuration
 1. Configure roles, verified domains and rules for incoming emails
 
+## Configuration
+
+	{
+	    "mappings": "git://..." or "file://..." or "https://...",
+	    "domains": [ "mails.example.com" ],
+	    "defaultRecipient": "info@mails.example.com",
+	    "aws": {
+	        "accessKey": "{ACCESS-KEY}",
+	        "secretKey": "{SECRET-KEY}",
+	        "region": "eu-west-1",
+	        "bucket": "mail-dispatcher",
+	        "bucketPrefix": "",
+	        "functionRoleArn": "{ROLE-ARN}"
+	    }
+	}
+
 ## Usage
 
 The `mail-dispatcher` executable provides multiple sub-commands, namely
 
 * help
+* setup
 * deploy
 
 The following options are available for all sub-commands
@@ -40,6 +57,10 @@ If no external configuration file is specified using `-c` or `--configuration`, 
 ### mail-dispatcher help
 
 Print all the application's sub-commands and available options.
+
+### mail-dispatcher setup
+
+Setup all configured domains and start verification process for pending entries.
 
 ### mail-dispatcher deploy
 
