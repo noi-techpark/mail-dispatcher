@@ -33,6 +33,15 @@ application
     })
 
 application
+    .command('setup')
+    .description('Setup ')
+    .action(() => {
+        bootstrap(application, (instance) => {
+            instance.setup()
+        })
+    })
+
+application
     .command('deploy')
     .description('Deploy latest version of configuration and function')
     .action(() => {

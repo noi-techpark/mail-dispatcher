@@ -2,11 +2,12 @@
     "dependencies": {
         "async": "*",
         "aws-sdk": "*",
+        "colors": "^1.3.2",
         "commander": "*",
         "fs-extra": "^7.0.1",
         "globby": "^8.0.1",
-        "retry": "*",
         "request": "*",
+        "retry": "*",
         "tmp": "0.0.33",
         "winston": "*"
     }

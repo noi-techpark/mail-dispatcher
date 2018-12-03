@@ -1,6 +1,7 @@
 const async = require('async')
 const AWS = require('aws-sdk')
 const child_process = require('child_process')
+const colors = require('colors')
 const fs = require('fs-extra')
 const globby = require('globby')
 const request = require('request')
@@ -39,6 +40,88 @@ module.exports = class MailDispatcher {
                     winston.format.simple()
                 )
             }) ]
+        })
+    }
+
+    setup() {
+        const self = this
+
+        const ses = new AWS.SES()
+
+        async.waterfall([
+
+            (callback) => {
+                ses.listIdentities({
+                    IdentityType: 'Domain',
+                    MaxItems: 1000
+                }, (err, data) => {
+                    if (!!err) {
+                        self.logger.log('error', 'SES.listIdentities', err)
+                        return callback(err)
+                    }
+
+                    callback(null, data.Identities)
+                })
+            },
+
+            (identities, callback) => {
+                ses.getIdentityVerificationAttributes({
+                    Identities: identities
+                }, (err, data) => {
+                    if (!!err) {
+                        self.logger.log('error', 'SES.getIdentityVerificationAttributes', err)
+                        return callback(err)
+                    }
+
+                    callback(null, data.VerificationAttributes)
+                })
+            },
+
+            (domains, callback) => {
+                async.mapSeries(self.configuration.domains, (domain, callback) => {
+                    if (!!domains[domain]) {
+                        callback(null, {
+                            domain: domain,
+                            status: domains[domain].VerificationStatus.toUpperCase(),
+                            token: domains[domain].VerificationToken
+                        })
+                    } else {
+                        ses.verifyDomainIdentity({
+                            Domain: domain
+                        }, (err, data) => {
+                            if (!!err) {
+                                self.logger.log('error', 'SES.verifyDomainIdentity', err)
+                                return callback(err)
+                            }
+
+                            callback(null, {
+                                domain: domain,
+                                status: 'PENDING',
+                                token: data.VerificationToken
+                            })
+                        })
+                    }
+                }, (err, domains) => {
+                    if (!!err) {
+                        return callback(err)
+                    }
+
+                    callback(null, domains)
+                })
+            }
+
+        ], (err, domains) => {
+            if (!!err) {
+                console.error(err.message || err)
+                return process.exit(1)
+            }
+
+            domains.forEach((item) => {
+                console.log(colors.cyan('Domain: %s'), item.domain)
+                console.log('  > Status: %s', item.status === 'SUCCESS' ? colors.green('Verified') : colors.red('Pending'))
+                console.log('  > Verification Domain: _amazonses.%s', item.domain)
+                console.log('  > Verification Value (TXT): %s', item.token)
+            })
         })
     }
 
