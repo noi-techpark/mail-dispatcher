@@ -1,0 +1,12 @@
+{
+    "dependencies": {
+        "async": "*",
+        "aws-sdk": "*",
+        "commander": "*",
+        "fs-extra": "^7.0.1",
+        "globby": "^8.0.1",
+        "retry": "*",
+        "tmp": "0.0.33",
+        "winston": "*"
+    }
+}
