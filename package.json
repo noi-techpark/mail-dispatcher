@@ -1,0 +1,15 @@
+{
+    "dependencies": {
+        "async": "*",
+        "aws-sdk": "*",
+        "colors": "^1.3.2",
+        "commander": "*",
+        "extend": "*",
+        "fs-extra": "^7.0.1",
+        "globby": "^8.0.1",
+        "request": "*",
+        "retry": "*",
+        "tmp": "0.0.33",
+        "winston": "*"
+    }
+}
