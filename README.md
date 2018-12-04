@@ -90,24 +90,24 @@ The bucket has to be configured with the following policy ("Permissions" tab of 
 The following snippet is an example configuration file. Please make sure to replace the placeholder `{ AWS-ACCESS-KEY }`, `{ AWS-SECRET-KEY }`, `{ S3-BUCKET-NAME }` and `{ FUNCTION-ROLE-ARN }`.
 
 	{
-	    "mappings": {
-	    	"type": "git",
-	    	"uri": "..."
-	    },
-	    "domains": [
-	    	{
-	    		"domain": "mails.example.com",
-	    		"defaultTo": [ "info@mails.example.com" ]
-    		}
-	    ],
-	    "aws": {
-	        "accessKey": "{ AWS-ACCESS-KEY }",
-	        "secretKey": "{ AWS-SECRET-KEY }",
-	        "region": "eu-west-1",
-	        "bucket": "{ S3-BUCKET-NAME }",
-	        "bucketPrefix": "",
-	        "functionRoleArn": "{ FUNCTION-ROLE-ARN }"
-	    }
+		"mappings": {
+			"type": "git",
+			"uri": "..."
+		},
+		"domains": [
+			{
+                "domain": "mails.example.com",
+                "defaultTo": [ "info@mails.example.com" ]
+			}
+		],
+        "aws": {
+            "accessKey": "{ AWS-ACCESS-KEY }",
+            "secretKey": "{ AWS-SECRET-KEY }",
+            "region": "eu-west-1",
+            "bucket": "{ S3-BUCKET-NAME }",
+            "bucketPrefix": "",
+            "functionRoleArn": "{ FUNCTION-ROLE-ARN }"
+        }
 	}
 
 #### Configuration property: mappings
@@ -131,8 +131,8 @@ Each `*.json` file in the cloned working copy of the repository must have the fo
 	{
 		"from": "tech@mails.example.com",
 		"to": [
-			"john.doe@example.com",
-			"jane.doe@example.com"
+            "john.doe@example.com",
+            "jane.doe@example.com"
 		]
 	}
 
@@ -144,7 +144,7 @@ You can also choose to use a local JSON file for holding the mappings configurat
 	}
 
 or a local JSON file, like follows
-	
+
 	{
 		"type": "http",
 		"uri": "https://etc.example.com/mail-dispatcher/mappings.json"
@@ -165,8 +165,8 @@ In both these cases, the structure of the file has to be structured like in the 
 		{
 			"from": "tech@mails.example.com",
 			"to": [
-				"john.doe@example.com",
-				"jane.doe@example.com"
+                "john.doe@example.com",
+                "jane.doe@example.com"
 			]
 		}
 	]
