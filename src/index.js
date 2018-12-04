@@ -22,7 +22,14 @@ exports.handler = (event, context, callback) => {
             var matches = {}
 
             recipients.forEach((recipient) => {
-                matches[recipient] = configuration.mappings[recipient] || configuration.mappings['@default']
+                if (!!configuration.mappings[recipient]) {
+                    matches[recipient] = configuration.mappings[recipient]
+                } else {
+                    var position = recipient.lastIndexOf('@')
+                    if (position !== -1) {
+                        matches[recipient] = configuration.mappings['@default'][recipient.slice(position + 1)]
+                    }
+                }
             })
 
             callback(null, email, matches)

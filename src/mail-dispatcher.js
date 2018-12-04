@@ -101,16 +101,16 @@ module.exports = class MailDispatcher {
             },
 
             (domains, callback) => {
-                async.mapSeries(self.configuration.domains, (domain, callback) => {
-                    if (!!domains[domain]) {
+                async.mapSeries(self.configuration.domains, (item, callback) => {
+                    if (!!domains[item.domain]) {
                         return callback(null, {
-                            domain: domain,
-                            status: domains[domain].VerificationStatus.toUpperCase(),
-                            token: domains[domain].VerificationToken
+                            domain: item.domain,
+                            status: domains[item.domain].VerificationStatus.toUpperCase(),
+                            token: domains[item.domain].VerificationToken
                         })
                     } else {
                         self.call(ses, 'verifyDomainIdentity', {
-                            Domain: domain
+                            Domain: item.domain
                         }, (err, data) => {
                             if (!!err) {
                                 self.logger.log('error', 'SES.verifyDomainIdentity', err)
@@ -118,7 +118,7 @@ module.exports = class MailDispatcher {
                             }
 
                             return callback(null, {
-                                domain: domain,
+                                domain: item.domain,
                                 status: 'PENDING',
                                 token: data.VerificationToken
                             })
@@ -193,9 +193,9 @@ module.exports = class MailDispatcher {
 
                             var unverifiedDomains = []
 
-                            self.configuration.domains.forEach((domain) => {
-                                if (!data.VerificationAttributes[domain] || data.VerificationAttributes[domain].VerificationStatus !== 'Success') {
-                                    unverifiedDomains.push(domain)
+                            self.configuration.domains.forEach((item) => {
+                                if (!data.VerificationAttributes[item.domain] || data.VerificationAttributes[item.domain].VerificationStatus !== 'Success') {
+                                    unverifiedDomains.push(item.domain)
                                 }
                             })
 
@@ -223,25 +223,25 @@ module.exports = class MailDispatcher {
                     bucket: self.configuration.aws.bucket,
                     bucketPrefix: self.configuration.aws.bucketPrefix,
                     mappings: {
-                        '@default': self.configuration.defaultRecipient
+                        '@default': {}
                     }
                 }
 
-                var matches
+                self.configuration.domains.forEach((item) => {
+                    functionConfiguration.mappings['@default'][item.domain] = item.defaultTo
+                })
 
-                matches = self.configuration.mappings.match(/^file:\/\/(.+)$/)
-                if (!!matches) {
-                    self.logger.log('info', 'Fetching mappings configuration from file "%s"...', matches[1])
+                if (self.configuration.mappings.type === 'file') {
+                    self.logger.log('info', 'Fetching mappings configuration from file "%s"...', self.configuration.mappings.uri)
 
-                    return callback(null, JSON.parse(fs.readFileSync(matches[1], 'utf8')))
+                    return callback(null, JSON.parse(fs.readFileSync(self.configuration.mappings.uri, 'utf8')))
                 }
 
-                matches = self.configuration.mappings.match(/^https?:\/\/(.+)$/)
-                if (!!matches) {
-                    self.logger.log('info', 'Fetching mappings configuration from url "%s"...', self.configuration.mappings)
+                if (self.configuration.mappings.type === 'http') {
+                    self.logger.log('info', 'Fetching mappings configuration from url "%s"...', self.configuration.mappings.uri)
 
                     request({
-                        url: self.configuration.mappings,
+                        url: self.configuration.mappings.uri,
                         json: true
                     }, (err, response, data) => {
                         if (!err && response.statusCode === 200) {
@@ -258,18 +258,17 @@ module.exports = class MailDispatcher {
                     })
                 }
 
-                matches = self.configuration.mappings.match(/^git:\/\/(.+)$/)
-                if (!!matches) {
-                    self.logger.log('info', 'Fetching mappings configuration from repository "%s"...', matches[1])
+                if (self.configuration.mappings.type === 'git') {
+                    self.logger.log('info', 'Fetching mappings configuration from repository "%s"...', self.configuration.mappings.uri)
 
-                    child_process.exec('git clone ' + matches[1] + ' ' + mappingsDirectory.name, () => {
+                    child_process.exec('git clone ' + self.configuration.mappings.uri + ' ' + mappingsDirectory.name, () => {
                         globby([ mappingsDirectory.name + '/**/*.json' ]).then(paths => {
                             paths.forEach(path => {
                                 if (path.endsWith('.json')) {
                                     const json = JSON.parse(fs.readFileSync(path))
 
-                                    if (!!json.address && !!json.recipients) {
-                                        functionConfiguration.mappings[json.address] = json.recipients
+                                    if (!!json.from && !!json.to) {
+                                        functionConfiguration.mappings[json.from] = json.to
                                     }
                                 }
                             })
@@ -405,7 +404,7 @@ module.exports = class MailDispatcher {
                         Name: self.configuration.resourceName,
                         Enabled: true,
                         ScanEnabled: true,
-                        Recipients: self.configuration.domains,
+                        Recipients: self.configuration.domains.map((item) => item.domain),
                         Actions: [
                             {
                                 S3Action: {
