@@ -10,7 +10,9 @@ const bootstrap = (application, action) => {
     try {
         var configurationFile = application.configuration || __dirname + '/config.json'
         var configuration = JSON.parse(fs.readFileSync(configurationFile))
-        var instance = new MailDispatcher(configuration)
+        var instance = new MailDispatcher(configuration, {
+            silent: !!application.silent
+        })
 
         action(instance)
     } catch(err) {
@@ -24,6 +26,7 @@ var application = commander
 
 application
     .option('-c, --configuration [path]', 'Path to configuration file')
+    .option('-s, --silent', 'Suppress all logging output')
 
 application
     .command('help')

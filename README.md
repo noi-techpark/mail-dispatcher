@@ -51,6 +51,7 @@ The `mail-dispatcher` executable provides multiple sub-commands, namely
 The following options are available for all sub-commands
 
 	-c, --configuration    Path to external/different configuration file to use
+	-s, --silent           Suppress all logging output
 
 If no external configuration file is specified using `-c` or `--configuration`, then the application expects to find a configuration file named **config.json** inside the project folder.
 

@@ -12,7 +12,7 @@ const winston = require('winston')
 
 module.exports = class MailDispatcher {
 
-    constructor(config) {
+    constructor(config, options) {
         const self = this
 
         self.configuration = config
@@ -34,7 +34,7 @@ module.exports = class MailDispatcher {
 
         self.logger = winston.createLogger({
             level: 'info',
-            silent: false,
+            silent: !!options.silent,
             transports: [ new winston.transports.Console({
                 format: winston.format.combine(
                     winston.format.colorize(),
