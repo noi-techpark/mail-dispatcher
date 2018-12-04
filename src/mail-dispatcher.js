@@ -2,9 +2,11 @@ const async = require('async')
 const AWS = require('aws-sdk')
 const child_process = require('child_process')
 const colors = require('colors')
+const extend = require('extend')
 const fs = require('fs-extra')
 const globby = require('globby')
 const request = require('request')
+const retry = require('retry')
 const tmp = require('tmp')
 const winston = require('winston')
 
@@ -43,6 +45,27 @@ module.exports = class MailDispatcher {
         })
     }
 
+    call(object, fn) {
+        const self = this
+        const args = Array.from(arguments)
+        const params = args.slice(2, args.length - 1)
+        const callback = args[args.length - 1]
+
+        var operation = retry.operation()
+
+        operation.attempt(() => {
+            object[fn].apply(object, params.concat([
+                (err, data) => {
+                    if (!!err && err.code === 'TooManyRequestsException' && operation.retry(err)) {
+                        return
+                    }
+
+                    callback(err, data)
+                }
+            ]))
+        })
+    }
+
     setup() {
         const self = this
 
@@ -51,7 +74,7 @@ module.exports = class MailDispatcher {
         async.waterfall([
 
             (callback) => {
-                ses.listIdentities({
+                self.call(ses, 'listIdentities', {
                     IdentityType: 'Domain',
                     MaxItems: 1000
                 }, (err, data) => {
@@ -65,7 +88,7 @@ module.exports = class MailDispatcher {
             },
 
             (identities, callback) => {
-                ses.getIdentityVerificationAttributes({
+                self.call(ses, 'getIdentityVerificationAttributes', {
                     Identities: identities
                 }, (err, data) => {
                     if (!!err) {
@@ -86,7 +109,7 @@ module.exports = class MailDispatcher {
                             token: domains[domain].VerificationToken
                         })
                     } else {
-                        ses.verifyDomainIdentity({
+                        self.call(ses, 'verifyDomainIdentity', {
                             Domain: domain
                         }, (err, data) => {
                             if (!!err) {
@@ -116,6 +139,8 @@ module.exports = class MailDispatcher {
                 return process.exit(1)
             }
 
+            self.logger.log('info', 'Setup completed.')
+
             domains.forEach((item) => {
                 console.log(colors.cyan('Domain: %s'), item.domain)
                 console.log('  > Status: %s', item.status === 'SUCCESS' ? colors.green('Verified') : colors.red('Pending'))
@@ -128,6 +153,9 @@ module.exports = class MailDispatcher {
 
     deploy() {
         const self = this
+
+        const lambda = new AWS.Lambda()
+        const ses = new AWS.SES()
 
         var mappingsDirectory = tmp.dirSync()
         var packageDir = tmp.dirSync()
@@ -215,63 +243,169 @@ module.exports = class MailDispatcher {
             (functionConfiguration, callback) => {
                 self.logger.log('info', 'Deploying function "%s"...', self.configuration.resourceName)
 
-                const lambda = new AWS.Lambda()
-
-                lambda.getFunction({ FunctionName: self.configuration.resourceName }, (err, data) => {
+                self.call(lambda, 'getFunction', {
+                    FunctionName: self.configuration.resourceName
+                }, (err, data) => {
                     if (!!err && err.code !== 'ResourceNotFoundException') {
                         self.logger.log('error', 'Lambda.getFunction', err)
                         return callback(err)
                     }
 
+                    var configuration = {
+                        FunctionName: self.configuration.resourceName,
+                        Handler: 'index.handler',
+                        Runtime: 'nodejs8.10',
+                        MemorySize: 128,
+                        Role: self.configuration.aws.functionRoleArn,
+                        Timeout: 30
+                    }
+
                     const code = fs.readFileSync(packageFile).buffer
 
                     if (!!data) {
-                        // TODO update function configuration
+                        async.series([
 
-                        lambda.updateFunctionCode({
-                            FunctionName: self.configuration.resourceName,
-                            Publish: true,
-                            ZipFile: code
-                        }, (err) => {
+                            (callback) => {
+                                self.call(lambda, 'updateFunctionConfiguration', configuration, (err) => {
+                                    if (!!err) {
+                                        self.logger.log('error', 'Lambda.updateFunctionConfiguration', err)
+                                        return callback(err)
+                                    }
+
+                                    callback(null)
+                                })
+                            },
+
+                            (callback) => {
+                                self.call(lambda, 'updateFunctionCode', {
+                                    FunctionName: self.configuration.resourceName,
+                                    Publish: true,
+                                    ZipFile: code
+                                }, (err) => {
+                                    if (!!err) {
+                                        self.logger.log('error', 'Lambda.updateFunctionCode', err)
+                                        return callback(err)
+                                    }
+
+                                    callback(null)
+                                })
+                            }
+
+                        ], (err) => {
                             if (!!err) {
-                                self.logger.log('error', 'Lambda.updateFunctionCode', err)
                                 return callback(err)
                             }
 
-                            callback(null, functionConfiguration)
+                            callback(null, functionConfiguration, data.Configuration.FunctionArn)
                         })
                     } else {
-                        lambda.createFunction({
-                            FunctionName: self.configuration.resourceName,
-                            Handler: 'index.handler',
-                            Runtime: 'nodejs8.10',
-                            MemorySize: 128,
+                        self.call(lambda, 'createFunction', extend(true, configuration, {
                             Publish: true,
-                            Role: self.configuration.aws.functionRoleArn,
-                            Timeout: 30,
                             Code: {
                                 ZipFile: code
                             }
-                        }, (err) => {
+                        }), (err, data) => {
                             if (!!err) {
                                 self.logger.log('error', 'Lambda.createFunction', err)
                                 return callback(err)
                             }
 
-                            callback(null, functionConfiguration)
+                            callback(null, functionConfiguration, data.FunctionArn)
                         })
                     }
                 })
             },
 
-            (functionConfiguration, callback) => {
+            (functionConfiguration, functionArn, callback) => {
+                self.logger.log('info', 'Ensuring the function can be invoked on incoming emails...')
+
+                self.call(lambda, 'addPermission', {
+                    FunctionName: self.configuration.resourceName,
+                    StatementId: 'GiveSESPermissionToInvokeFunction',
+                    Action: 'lambda:InvokeFunction',
+                    Principal: 'ses.amazonaws.com'
+                }, (err, data) => {
+                    if (!!err && err.code !== 'ResourceConflictException') {
+                        self.logger.log('error', 'Lambda.addPermission', err || data)
+                        return callback(err)
+                    }
+
+                    if (!!err && err.code === 'ResourceConflictException') {
+                        return callback(null, functionConfiguration, functionArn)
+                    }
+
+                    return callback(null, functionConfiguration, functionArn)
+                })
+            },
+
+            (functionConfiguration, functionArn, callback) => {
+                self.logger.log('info', 'Ensuring the rules for incoming emails are configured...')
+
+                self.call(ses, 'describeActiveReceiptRuleSet', {}, (err, data) => {
+                    if (!!err) {
+                        self.logger.log('error', 'SES.describeActiveReceiptRuleSet', err)
+                        return callback(err)
+                    }
+
+                    var rule = {
+                        Name: self.configuration.resourceName,
+                        Enabled: true,
+                        ScanEnabled: true,
+                        Recipients: self.configuration.domains,
+                        Actions: [
+                            {
+                                S3Action: {
+                                    BucketName: self.configuration.aws.bucket,
+                                    ObjectKeyPrefix: self.configuration.aws.bucketPrefix
+                                }
+                            },
+                            {
+                                LambdaAction: {
+                                    FunctionArn: functionArn,
+                                    InvocationType: 'Event'
+                                }
+                            }
+                        ]
+                    }
+
+                    var matches = data.Rules.filter((rule) => rule.Name === self.configuration.resourceName)
+
+                    if (matches.length === 0) {
+                        self.call(ses, 'createReceiptRule', {
+                            RuleSetName: data.Metadata.Name,
+                            Rule: rule
+                        }, (err) => {
+                            if (!!err) {
+                                self.logger.log('error', 'SES.createReceiptRule', err)
+                                return callback(err)
+                            }
+
+                            callback(null, functionConfiguration, functionArn)
+                        })
+                    } else {
+                        self.call(ses, 'updateReceiptRule', {
+                            RuleSetName: data.Metadata.Name,
+                            Rule: rule
+                        }, (err) => {
+                            if (!!err) {
+                                self.logger.log('error', 'SES.updateReceiptRule', err)
+                                return callback(err)
+                            }
+
+                            callback(null, functionConfiguration, functionArn)
+                        })
+                    }
+                })
+            },
+
+            (functionConfiguration, functionArn, callback) => {
                 self.logger.log('info', 'Cleaning up...')
 
                 fs.removeSync(mappingsDirectory.name)
                 fs.removeSync(packageDir.name)
                 fs.removeSync(packageFile)
 
-                callback(null, functionConfiguration)
+                callback(null, functionConfiguration, functionArn)
             }
 
         ], (err) => {
