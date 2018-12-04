@@ -218,6 +218,61 @@ module.exports = class MailDispatcher {
             },
 
             (callback) => {
+                if (self.configuration.mappings.type === 'file') {
+                    self.logger.log('info', 'Fetching mappings configuration from file "%s"...', self.configuration.mappings.uri)
+
+                    if (!fs.existsSync(self.configuration.mappings.uri)) {
+                        return callback(new Error('Given file does not appear to be readable or exist.'))
+                    }
+
+                    var data = JSON.parse(fs.readFileSync(self.configuration.mappings.uri, 'utf8'))
+
+                    if (!data) {
+                        return callback(new Error('Invalid JSON string in file.'))
+                    }
+
+                    return callback(null, data)
+                }
+
+                if (self.configuration.mappings.type === 'http') {
+                    self.logger.log('info', 'Fetching mappings configuration from url "%s"...', self.configuration.mappings.uri)
+
+                    request({
+                        url: self.configuration.mappings.uri,
+                        json: true
+                    }, (err, response, data) => {
+                        if (!!err || response.statusCode !== 200) {
+                            return callback(err)
+                        }
+
+                        if (!data) {
+                            return callback(new Error('Invalid JSON string in response.'))
+                        }
+
+                        return callback(null, data)
+                    })
+                }
+
+                if (self.configuration.mappings.type === 'git') {
+                    self.logger.log('info', 'Fetching mappings configuration from repository "%s"...', self.configuration.mappings.uri)
+
+                    child_process.exec('git clone ' + self.configuration.mappings.uri + ' ' + mappingsDirectory.name, () => {
+                        globby([ mappingsDirectory.name + '/**/*.json' ]).then(paths => {
+                            var data = []
+
+                            paths.forEach(path => {
+                                if (path.endsWith('.json')) {
+                                    data.push(JSON.parse(fs.readFileSync(path)))
+                                }
+                            })
+
+                            return callback(null, data)
+                        })
+                    })
+                }
+            },
+
+            (items, callback) => {
                 var functionConfiguration = {
                     region: self.configuration.aws.region,
                     bucket: self.configuration.aws.bucket,
@@ -231,52 +286,13 @@ module.exports = class MailDispatcher {
                     functionConfiguration.mappings['@default'][item.domain] = item.defaultTo
                 })
 
-                if (self.configuration.mappings.type === 'file') {
-                    self.logger.log('info', 'Fetching mappings configuration from file "%s"...', self.configuration.mappings.uri)
+                items.forEach((item) => {
+                    if (!!item.from && !!item.to) {
+                        functionConfiguration.mappings[item.from] = item.to
+                    }
+                })
 
-                    return callback(null, JSON.parse(fs.readFileSync(self.configuration.mappings.uri, 'utf8')))
-                }
-
-                if (self.configuration.mappings.type === 'http') {
-                    self.logger.log('info', 'Fetching mappings configuration from url "%s"...', self.configuration.mappings.uri)
-
-                    request({
-                        url: self.configuration.mappings.uri,
-                        json: true
-                    }, (err, response, data) => {
-                        if (!err && response.statusCode === 200) {
-                            if (!data) {
-                                return callback(new Error('Invalid JSON string in response.'))
-                            }
-
-                            return callback(null, data)
-                        } else if (!!err) {
-                            return callback(err)
-                        } else {
-                            return callback(null, [])
-                        }
-                    })
-                }
-
-                if (self.configuration.mappings.type === 'git') {
-                    self.logger.log('info', 'Fetching mappings configuration from repository "%s"...', self.configuration.mappings.uri)
-
-                    child_process.exec('git clone ' + self.configuration.mappings.uri + ' ' + mappingsDirectory.name, () => {
-                        globby([ mappingsDirectory.name + '/**/*.json' ]).then(paths => {
-                            paths.forEach(path => {
-                                if (path.endsWith('.json')) {
-                                    const json = JSON.parse(fs.readFileSync(path))
-
-                                    if (!!json.from && !!json.to) {
-                                        functionConfiguration.mappings[json.from] = json.to
-                                    }
-                                }
-                            })
-
-                            return callback(null, functionConfiguration)
-                        })
-                    })
-                }
+                return callback(null, functionConfiguration)
             },
 
             (functionConfiguration, callback) => {
