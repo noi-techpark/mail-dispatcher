@@ -83,7 +83,7 @@ module.exports = class MailDispatcher {
                         return callback(err)
                     }
 
-                    callback(null, data.Identities)
+                    return callback(null, data.Identities)
                 })
             },
 
@@ -96,14 +96,14 @@ module.exports = class MailDispatcher {
                         return callback(err)
                     }
 
-                    callback(null, data.VerificationAttributes)
+                    return callback(null, data.VerificationAttributes)
                 })
             },
 
             (domains, callback) => {
                 async.mapSeries(self.configuration.domains, (domain, callback) => {
                     if (!!domains[domain]) {
-                        callback(null, {
+                        return callback(null, {
                             domain: domain,
                             status: domains[domain].VerificationStatus.toUpperCase(),
                             token: domains[domain].VerificationToken
@@ -117,7 +117,7 @@ module.exports = class MailDispatcher {
                                 return callback(err)
                             }
 
-                            callback(null, {
+                            return callback(null, {
                                 domain: domain,
                                 status: 'PENDING',
                                 token: data.VerificationToken
@@ -129,7 +129,7 @@ module.exports = class MailDispatcher {
                         return callback(err)
                     }
 
-                    callback(null, domains)
+                    return callback(null, domains)
                 })
             }
 
@@ -164,6 +164,60 @@ module.exports = class MailDispatcher {
         async.waterfall([
 
             (callback) => {
+                self.logger.log('info', 'Checking that all configured domains have been verified...')
+
+                async.waterfall([
+
+                    (callback) => {
+                        self.call(ses, 'listIdentities', {
+                            IdentityType: 'Domain',
+                            MaxItems: 1000
+                        }, (err, data) => {
+                            if (!!err) {
+                                self.logger.log('error', 'SES.listIdentities', err)
+                                return callback(err)
+                            }
+
+                            return callback(null, data.Identities)
+                        })
+                    },
+
+                    (identities, callback) => {
+                        self.call(ses, 'getIdentityVerificationAttributes', {
+                            Identities: identities
+                        }, (err, data) => {
+                            if (!!err) {
+                                self.logger.log('error', 'SES.getIdentityVerificationAttributes', err)
+                                return callback(err)
+                            }
+
+                            var unverifiedDomains = []
+
+                            self.configuration.domains.forEach((domain) => {
+                                if (!data.VerificationAttributes[domain] || data.VerificationAttributes[domain].VerificationStatus !== 'Success') {
+                                    unverifiedDomains.push(domain)
+                                }
+                            })
+
+                            if (unverifiedDomains.length > 0) {
+                                self.logger.log('error', 'Trying to use unverified domains: [ %s ]', unverifiedDomains.join(', '))
+                                return callback(new Error('Some of the configured domains have not been verified, please check or run the setup again.'))
+                            } else {
+                                return callback(null)
+                            }
+                        })
+                    },
+
+                ], (err) => {
+                    if (!!err) {
+                        return callback(err)
+                    }
+
+                    return callback(null)
+                })
+            },
+
+            (callback) => {
                 var functionConfiguration = {
                     region: self.configuration.aws.region,
                     bucket: self.configuration.aws.bucket,
@@ -195,11 +249,11 @@ module.exports = class MailDispatcher {
                                 return callback(new Error('Invalid JSON string in response.'))
                             }
 
-                            callback(null, data)
+                            return callback(null, data)
                         } else if (!!err) {
-                            callback(err)
+                            return callback(err)
                         } else {
-                            callback(null, [])
+                            return callback(null, [])
                         }
                     })
                 }
@@ -236,7 +290,7 @@ module.exports = class MailDispatcher {
                 fs.copySync(__dirname + '/index.js', packageDir.name + '/index.js')
 
                 child_process.exec('zip -rq -X "' + packageFile + '" ./node_modules ./config.json ./index.js', { cwd: packageDir.name }, () => {
-                    callback(null, functionConfiguration)
+                    return callback(null, functionConfiguration)
                 })
             },
 
@@ -272,7 +326,7 @@ module.exports = class MailDispatcher {
                                         return callback(err)
                                     }
 
-                                    callback(null)
+                                    return callback(null)
                                 })
                             },
 
@@ -287,7 +341,7 @@ module.exports = class MailDispatcher {
                                         return callback(err)
                                     }
 
-                                    callback(null)
+                                    return callback(null)
                                 })
                             }
 
@@ -296,7 +350,7 @@ module.exports = class MailDispatcher {
                                 return callback(err)
                             }
 
-                            callback(null, functionConfiguration, data.Configuration.FunctionArn)
+                            return callback(null, functionConfiguration, data.Configuration.FunctionArn)
                         })
                     } else {
                         self.call(lambda, 'createFunction', extend(true, configuration, {
@@ -310,7 +364,7 @@ module.exports = class MailDispatcher {
                                 return callback(err)
                             }
 
-                            callback(null, functionConfiguration, data.FunctionArn)
+                            return callback(null, functionConfiguration, data.FunctionArn)
                         })
                     }
                 })
@@ -380,7 +434,7 @@ module.exports = class MailDispatcher {
                                 return callback(err)
                             }
 
-                            callback(null, functionConfiguration, functionArn)
+                            return callback(null, functionConfiguration, functionArn)
                         })
                     } else {
                         self.call(ses, 'updateReceiptRule', {
@@ -392,7 +446,7 @@ module.exports = class MailDispatcher {
                                 return callback(err)
                             }
 
-                            callback(null, functionConfiguration, functionArn)
+                            return callback(null, functionConfiguration, functionArn)
                         })
                     }
                 })
@@ -405,7 +459,7 @@ module.exports = class MailDispatcher {
                 fs.removeSync(packageDir.name)
                 fs.removeSync(packageFile)
 
-                callback(null, functionConfiguration, functionArn)
+                return callback(null, functionConfiguration, functionArn)
             }
 
         ], (err) => {
