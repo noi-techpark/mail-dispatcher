@@ -89,7 +89,7 @@ exports.handler = (event, context, callback) => {
 
                 headerPart = headerPart.replace(/^DKIM-Signature: .*\r?\n(\s+.*\r?\n)*/mg, '')
 
-                headerPart += ('Received: by inbound-smtp.' + configuration.region + '.amazonaws.com with SMTP; ' + (new Date()).toString() + '\r\n')
+                headerPart = headerPart.replace(/Received:/g, 'X-Original-Received:')
 
                 ses.sendRawEmail({
                     Destinations: recipients,
