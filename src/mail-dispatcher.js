@@ -9,6 +9,7 @@ const request = require('request')
 const retry = require('retry')
 const tmp = require('tmp')
 const winston = require('winston')
+const _ = require('underscore')
 
 module.exports = class MailDispatcher {
 
@@ -151,6 +152,49 @@ module.exports = class MailDispatcher {
         })
     }
 
+    canBeResolved(table, address) {
+        const self = this
+
+        var queue = [ address ]
+        var processed = []
+
+        do {
+            var resolvedQueue = []
+            var processedAddresses = []
+
+            queue.forEach((address) => {
+                if (!!table[address]) {
+                    table[address].forEach((to) => {
+                        processedAddresses.push(to)
+
+                        self.configuration.domains.forEach((item) => {
+                            if (to.includes('@' + item.domain)) {
+                                resolvedQueue.push(to)
+                            }
+                        })
+                    })
+                } else {
+                    self.configuration.domains.forEach((item) => {
+                        if (address.includes('@' + item.domain)) {
+                            processedAddresses.push(item.defaultTo)
+                            resolvedQueue.push(item.defaultTo)
+                        }
+                    })
+                }
+            })
+
+            queue = resolvedQueue
+
+            if (_.intersection(queue, processed).length > 0) {
+                return false
+            }
+
+            processed = _.unique(processed.concat(processedAddresses))
+        } while (queue.length > 0)
+
+        return true
+    }
+
     deploy() {
         const self = this
 
@@ -270,6 +314,40 @@ module.exports = class MailDispatcher {
                         })
                     })
                 }
+            },
+
+            (items, callback) => {
+                const self = this
+
+                self.logger.log('info', 'Checking whether the mapped addresses are acyclic...')
+
+                var table = {}
+                items.forEach((item) => {
+                    table[item.from] = item.to
+                })
+
+                var invalid = []
+                var addresses = []
+
+                self.configuration.domains.map((item) => item.defaultTo).forEach((tos) => {
+                    addresses = addresses.concat(tos)
+                })
+
+                addresses = addresses.concat(items.map((item) => item.from))
+
+                addresses = _.unique(addresses)
+
+                addresses.forEach((address) => {
+                    if (!self.canBeResolved(table, address)) {
+                        invalid.push(address)
+                    }
+                })
+
+                if (invalid.length > 0) {
+                    return callback(new Error('Detected forwarding cycle for: [ ' + invalid.join(', ') + ' ]'))
+                }
+
+                return callback(null, items)
             },
 
             (items, callback) => {
