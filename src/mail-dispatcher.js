@@ -514,7 +514,8 @@ module.exports = class MailDispatcher {
                         ]
                     }
 
-                    var matches = data.Rules.filter((rule) => rule.Name === self.configuration.resourceName)
+                    var rules = data.Rules || []
+                    var matches = rules.filter((rule) => rule.Name === self.configuration.resourceName)
 
                     if (matches.length === 0) {
                         self.call(ses, 'createReceiptRule', {
