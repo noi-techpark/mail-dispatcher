@@ -2,13 +2,13 @@ const async = require('async')
 const AWS = require('aws-sdk')
 const child_process = require('child_process')
 const colors = require('colors')
-const extend = require('extend')
 const fs = require('fs-extra')
 const globby = require('globby')
 const request = require('request')
 const retry = require('retry')
 const tmp = require('tmp')
 const winston = require('winston')
+const _ = require('underscore')
 
 module.exports = class MailDispatcher {
 
@@ -151,6 +151,49 @@ module.exports = class MailDispatcher {
         })
     }
 
+    canBeResolved(table, address) {
+        const self = this
+
+        var queue = [ address ]
+        var processed = []
+
+        do {
+            var resolvedQueue = []
+            var processedAddresses = []
+
+            queue.forEach((address) => {
+                if (!!table[address]) {
+                    table[address].forEach((to) => {
+                        processedAddresses.push(to)
+
+                        self.configuration.domains.forEach((item) => {
+                            if (to.includes('@' + item.domain)) {
+                                resolvedQueue.push(to)
+                            }
+                        })
+                    })
+                } else {
+                    self.configuration.domains.forEach((item) => {
+                        if (address.includes('@' + item.domain)) {
+                            processedAddresses.push(item.defaultTo)
+                            resolvedQueue.push(item.defaultTo)
+                        }
+                    })
+                }
+            })
+
+            queue = resolvedQueue
+
+            if (_.intersection(queue, processed).length > 0) {
+                return false
+            }
+
+            processed = _.unique(processed.concat(processedAddresses))
+        } while (queue.length > 0)
+
+        return true
+    }
+
     deploy() {
         const self = this
 
@@ -218,6 +261,95 @@ module.exports = class MailDispatcher {
             },
 
             (callback) => {
+                if (self.configuration.mappings.type === 'file') {
+                    self.logger.log('info', 'Fetching mappings configuration from file "%s"...', self.configuration.mappings.uri)
+
+                    if (!fs.existsSync(self.configuration.mappings.uri)) {
+                        return callback(new Error('Given file does not appear to be readable or exist.'))
+                    }
+
+                    var data = JSON.parse(fs.readFileSync(self.configuration.mappings.uri, 'utf8'))
+
+                    if (!data) {
+                        return callback(new Error('Invalid JSON string in file.'))
+                    }
+
+                    return callback(null, data)
+                }
+
+                if (self.configuration.mappings.type === 'http') {
+                    self.logger.log('info', 'Fetching mappings configuration from url "%s"...', self.configuration.mappings.uri)
+
+                    request({
+                        url: self.configuration.mappings.uri,
+                        json: true
+                    }, (err, response, data) => {
+                        if (!!err || response.statusCode !== 200) {
+                            return callback(err)
+                        }
+
+                        if (!data) {
+                            return callback(new Error('Invalid JSON string in response.'))
+                        }
+
+                        return callback(null, data)
+                    })
+                }
+
+                if (self.configuration.mappings.type === 'git') {
+                    self.logger.log('info', 'Fetching mappings configuration from repository "%s"...', self.configuration.mappings.uri)
+
+                    child_process.exec('git clone ' + self.configuration.mappings.uri + ' ' + mappingsDirectory.name, () => {
+                        globby([ mappingsDirectory.name + '/**/*.json' ]).then(paths => {
+                            var data = []
+
+                            paths.forEach(path => {
+                                if (path.endsWith('.json')) {
+                                    data.push(JSON.parse(fs.readFileSync(path)))
+                                }
+                            })
+
+                            return callback(null, data)
+                        })
+                    })
+                }
+            },
+
+            (items, callback) => {
+                const self = this
+
+                self.logger.log('info', 'Checking whether the mapped addresses are acyclic...')
+
+                var table = {}
+                items.forEach((item) => {
+                    table[item.from] = item.to
+                })
+
+                var invalid = []
+                var addresses = []
+
+                self.configuration.domains.map((item) => item.defaultTo).forEach((tos) => {
+                    addresses = addresses.concat(tos)
+                })
+
+                addresses = addresses.concat(items.map((item) => item.from))
+
+                addresses = _.unique(addresses)
+
+                addresses.forEach((address) => {
+                    if (!self.canBeResolved(table, address)) {
+                        invalid.push(address)
+                    }
+                })
+
+                if (invalid.length > 0) {
+                    return callback(new Error('Detected forwarding cycle for: [ ' + invalid.join(', ') + ' ]'))
+                }
+
+                return callback(null, items)
+            },
+
+            (items, callback) => {
                 var functionConfiguration = {
                     region: self.configuration.aws.region,
                     bucket: self.configuration.aws.bucket,
@@ -231,52 +363,13 @@ module.exports = class MailDispatcher {
                     functionConfiguration.mappings['@default'][item.domain] = item.defaultTo
                 })
 
-                if (self.configuration.mappings.type === 'file') {
-                    self.logger.log('info', 'Fetching mappings configuration from file "%s"...', self.configuration.mappings.uri)
+                items.forEach((item) => {
+                    if (!!item.from && !!item.to) {
+                        functionConfiguration.mappings[item.from] = item.to
+                    }
+                })
 
-                    return callback(null, JSON.parse(fs.readFileSync(self.configuration.mappings.uri, 'utf8')))
-                }
-
-                if (self.configuration.mappings.type === 'http') {
-                    self.logger.log('info', 'Fetching mappings configuration from url "%s"...', self.configuration.mappings.uri)
-
-                    request({
-                        url: self.configuration.mappings.uri,
-                        json: true
-                    }, (err, response, data) => {
-                        if (!err && response.statusCode === 200) {
-                            if (!data) {
-                                return callback(new Error('Invalid JSON string in response.'))
-                            }
-
-                            return callback(null, data)
-                        } else if (!!err) {
-                            return callback(err)
-                        } else {
-                            return callback(null, [])
-                        }
-                    })
-                }
-
-                if (self.configuration.mappings.type === 'git') {
-                    self.logger.log('info', 'Fetching mappings configuration from repository "%s"...', self.configuration.mappings.uri)
-
-                    child_process.exec('git clone ' + self.configuration.mappings.uri + ' ' + mappingsDirectory.name, () => {
-                        globby([ mappingsDirectory.name + '/**/*.json' ]).then(paths => {
-                            paths.forEach(path => {
-                                if (path.endsWith('.json')) {
-                                    const json = JSON.parse(fs.readFileSync(path))
-
-                                    if (!!json.from && !!json.to) {
-                                        functionConfiguration.mappings[json.from] = json.to
-                                    }
-                                }
-                            })
-
-                            return callback(null, functionConfiguration)
-                        })
-                    })
-                }
+                return callback(null, functionConfiguration)
             },
 
             (functionConfiguration, callback) => {
@@ -352,7 +445,7 @@ module.exports = class MailDispatcher {
                             return callback(null, functionConfiguration, data.Configuration.FunctionArn)
                         })
                     } else {
-                        self.call(lambda, 'createFunction', extend(true, configuration, {
+                        self.call(lambda, 'createFunction', _.extend(configuration, {
                             Publish: true,
                             Code: {
                                 ZipFile: code
