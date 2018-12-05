@@ -2,7 +2,6 @@ const async = require('async')
 const AWS = require('aws-sdk')
 const child_process = require('child_process')
 const colors = require('colors')
-const extend = require('extend')
 const fs = require('fs-extra')
 const globby = require('globby')
 const request = require('request')
@@ -446,7 +445,7 @@ module.exports = class MailDispatcher {
                             return callback(null, functionConfiguration, data.Configuration.FunctionArn)
                         })
                     } else {
-                        self.call(lambda, 'createFunction', extend(true, configuration, {
+                        self.call(lambda, 'createFunction', _.extend(configuration, {
                             Publish: true,
                             Code: {
                                 ZipFile: code
