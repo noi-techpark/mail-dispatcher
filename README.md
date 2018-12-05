@@ -24,6 +24,20 @@ The following instructions will configure the environment and need to be perform
 1. Create configuration file `config.json`
 1. Run `setup` command
 
+### Configure AWS user/credentials
+
+If you don't want to use your existing AWS account's credentials, you can create a separate user with it's own credentials. From the IAM's control panel you can create new users with the following options and settings
+
+- **Username**: (of your choice)
+- **Programmatic access**: Checked/Enabled
+
+Make sure the following permissions/policies are configured
+
+- **AmazonSESFullAccess** (used to create/update verified domains and rules)
+- **AWSLambdaFullAccess** (used to create/update deployed function)
+
+After successful creation of the user, please take note of the created access/secret keys and indicate them in the configuration properties `aws.accessKey` and `aws.secretKey`.
+
 ### Setup role for AWS Lambda
 
 The function which will process the incoming emails needs to be associated with an execution role, which defines all the permitted permissions/capabilities. The ARN of the role needs to be indicated in the configuration's property `aws.functionRoleArn`.
