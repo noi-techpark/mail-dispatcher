@@ -487,61 +487,100 @@ module.exports = class MailDispatcher {
             (functionConfiguration, functionArn, callback) => {
                 self.logger.log('info', 'Ensuring the rules for incoming emails are configured...')
 
-                self.call(ses, 'describeActiveReceiptRuleSet', {}, (err, data) => {
+                async.waterfall([
+
+                    (callback) => {
+                        self.call(ses, 'describeActiveReceiptRuleSet', {}, (err, data) => {
+                            if (!!err) {
+                                self.logger.log('error', 'SES.describeActiveReceiptRuleSet', err)
+                                return callback(err)
+                            }
+
+                            if (!!data && !!data.Metadata && !!data.Metadata.Name) {
+                                callback(null, data.Metadata.Name, data.Rules || [])
+                            } else {
+                                var ruleSet = 'default-rule-set-' + Math.random().toString(36).substring(2, 8)
+
+                                self.call(ses, 'createReceiptRuleSet', {
+                                    RuleSetName: ruleSet
+                                }, (err, data) => {
+                                    if (!!err) {
+                                        self.logger.log('error', 'SES.createReceiptRuleSet', err)
+                                        return callback(err)
+                                    }
+
+                                    self.call(ses, 'setActiveReceiptRuleSet', {
+                                        RuleSetName: ruleSet
+                                    }, (err, data) => {
+                                        if (!!err) {
+                                            self.logger.log('error', 'SES.setActiveReceiptRuleSet', err)
+                                            return callback(err)
+                                        }
+
+                                        callback(null, ruleSet, [])
+                                    })
+                                })
+                            }
+                        })
+                    },
+
+                    (ruleSet, rules, callback) => {
+                        var rule = {
+                            Name: self.configuration.resourceName,
+                            Enabled: true,
+                            ScanEnabled: true,
+                            Recipients: self.configuration.domains.map((item) => item.domain),
+                            Actions: [
+                                {
+                                    S3Action: {
+                                        BucketName: self.configuration.aws.bucket,
+                                        ObjectKeyPrefix: self.configuration.aws.bucketPrefix
+                                    }
+                                },
+                                {
+                                    LambdaAction: {
+                                        FunctionArn: functionArn,
+                                        InvocationType: 'Event'
+                                    }
+                                }
+                            ]
+                        }
+
+                        var matches = rules.filter((rule) => rule.Name === self.configuration.resourceName)
+
+                        if (matches.length === 0) {
+                            self.call(ses, 'createReceiptRule', {
+                                RuleSetName: ruleSet,
+                                Rule: rule
+                            }, (err) => {
+                                if (!!err) {
+                                    self.logger.log('error', 'SES.createReceiptRule', err)
+                                    return callback(err)
+                                }
+
+                                return callback(null)
+                            })
+                        } else {
+                            self.call(ses, 'updateReceiptRule', {
+                                RuleSetName: ruleSet,
+                                Rule: rule
+                            }, (err) => {
+                                if (!!err) {
+                                    self.logger.log('error', 'SES.updateReceiptRule', err)
+                                    return callback(err)
+                                }
+
+                                return callback(null)
+                            })
+                        }
+                    }
+
+                ], (err) => {
                     if (!!err) {
-                        self.logger.log('error', 'SES.describeActiveReceiptRuleSet', err)
                         return callback(err)
                     }
 
-                    var rule = {
-                        Name: self.configuration.resourceName,
-                        Enabled: true,
-                        ScanEnabled: true,
-                        Recipients: self.configuration.domains.map((item) => item.domain),
-                        Actions: [
-                            {
-                                S3Action: {
-                                    BucketName: self.configuration.aws.bucket,
-                                    ObjectKeyPrefix: self.configuration.aws.bucketPrefix
-                                }
-                            },
-                            {
-                                LambdaAction: {
-                                    FunctionArn: functionArn,
-                                    InvocationType: 'Event'
-                                }
-                            }
-                        ]
-                    }
-
-                    var rules = data.Rules || []
-                    var matches = rules.filter((rule) => rule.Name === self.configuration.resourceName)
-
-                    if (matches.length === 0) {
-                        self.call(ses, 'createReceiptRule', {
-                            RuleSetName: data.Metadata.Name,
-                            Rule: rule
-                        }, (err) => {
-                            if (!!err) {
-                                self.logger.log('error', 'SES.createReceiptRule', err)
-                                return callback(err)
-                            }
-
-                            return callback(null, functionConfiguration, functionArn)
-                        })
-                    } else {
-                        self.call(ses, 'updateReceiptRule', {
-                            RuleSetName: data.Metadata.Name,
-                            Rule: rule
-                        }, (err) => {
-                            if (!!err) {
-                                self.logger.log('error', 'SES.updateReceiptRule', err)
-                                return callback(err)
-                            }
-
-                            return callback(null, functionConfiguration, functionArn)
-                        })
-                    }
+                    return callback(null, functionConfiguration, functionArn)
                 })
             },
 
