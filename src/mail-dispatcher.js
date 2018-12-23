@@ -21,6 +21,18 @@ module.exports = class MailDispatcher {
             self.configuration.resourceName = 'mail-dispatcher'
         }
 
+        if (!!self.configuration.defaultTo) {
+            self.configuration.domains = self.configuration.domains.map((entry) => {
+                if (!entry.defaultTo) {
+                    return _.extend(entry, {
+                        defaultTo: self.configuration.defaultTo
+                    })
+                }
+
+                return entry
+            })
+        }
+
         // TODO validate configuration
 
         AWS.config.update({

@@ -185,10 +185,19 @@ In both these cases, the structure of the file has to be structured like in the 
         }
     ]
 
+#### Configuration property: defaultTo
+
+    Required: false
+    Type: string (email)
+
+Set the default email address of domains, used when there's no matching rule/mapping.
+
+This value will only be applied to domains without an explicit `defaultTo` setting.
+
 #### Configuration property: domains
 
     Required: true
-    Type: array (objects with structure { "domain", "defaultRecipient" })
+    Type: array (objects with structure { "domain", "defaultTo" })
 
 The domains used for the forwarding, each associated with a default recipient. These domains will be queued for verification during the `setup` command, if not yet configured.
 
