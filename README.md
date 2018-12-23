@@ -227,6 +227,27 @@ This property is used to store the emails in the configured S3 bucket using a pr
 
 This property represents the ARN of a AWS role that will be associated to the deployed function.
 
+#### Configuration property: aws.bouncesTopic
+
+    Required: false
+    Type: string (AWS ARN)
+
+This property represents the ARN of the SNS topic that will be triggered/notified in case of bounced emails.
+
+#### Configuration property: aws.complaintsTopic
+
+    Required: false
+    Type: string (AWS ARN)
+
+This property represents the ARN of the SNS topic that will be triggered/notified in case of complaints.
+
+#### Configuration property: aws.deliveriesTopic
+
+    Required: false
+    Type: string (AWS ARN)
+
+This property represents the ARN of the SNS topic that will be triggered/notified when emails are delivered.
+
 ## Usage
 
 The `mail-dispatcher` executable provides multiple sub-commands, namely
