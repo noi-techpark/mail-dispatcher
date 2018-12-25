@@ -21,6 +21,18 @@ module.exports = class MailDispatcher {
             self.configuration.resourceName = 'mail-dispatcher'
         }
 
+        if (!!self.configuration.defaultTo) {
+            self.configuration.domains = self.configuration.domains.map((entry) => {
+                if (!entry.defaultTo) {
+                    return _.extend(entry, {
+                        defaultTo: self.configuration.defaultTo
+                    })
+                }
+
+                return entry
+            })
+        }
+
         // TODO validate configuration
 
         AWS.config.update({
@@ -125,6 +137,49 @@ module.exports = class MailDispatcher {
                         })
                     }
                 }, (err, domains) => {
+                    if (!!err) {
+                        return callback(err)
+                    }
+
+                    return callback(null, domains)
+                })
+            },
+
+            (domains, callback) => {
+                var updates = []
+
+                self.configuration.domains.forEach((item) => {
+                    _.each({
+                        bouncesTopic: 'Bounce',
+                        complaintsTopic: 'Complaint',
+                        deliveriesTopic: 'Delivery'
+                    }, (type, property) => {
+                        if (!!self.configuration.aws[property]) {
+                            updates.push({
+                                Identity: item.domain,
+                                NotificationType: type,
+                                SnsTopic: self.configuration.aws[property]
+                            })
+                        } else {
+                            updates.push({
+                                Identity: item.domain,
+                                NotificationType: type,
+                                SnsTopic: null
+                            })
+                        }
+                    })
+                });
+
+                async.mapSeries(updates, (update, callback) => {
+                    self.call(ses, 'setIdentityNotificationTopic', update, (err) => {
+                        if (!!err) {
+                            self.logger.log('error', 'SES.setIdentityNotificationTopic', err)
+                            return callback(err)
+                        }
+
+                        return callback(null)
+                    })
+                }, (err) => {
                     if (!!err) {
                         return callback(err)
                     }

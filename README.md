@@ -185,10 +185,19 @@ In both these cases, the structure of the file has to be structured like in the 
         }
     ]
 
+#### Configuration property: defaultTo
+
+    Required: false
+    Type: string (email)
+
+Set the default email address of domains, used when there's no matching rule/mapping.
+
+This value will only be applied to domains without an explicit `defaultTo` setting.
+
 #### Configuration property: domains
 
     Required: true
-    Type: array (objects with structure { "domain", "defaultRecipient" })
+    Type: array (objects with structure { "domain", "defaultTo" })
 
 The domains used for the forwarding, each associated with a default recipient. These domains will be queued for verification during the `setup` command, if not yet configured.
 
@@ -226,6 +235,27 @@ This property is used to store the emails in the configured S3 bucket using a pr
     Type: string (AWS ARN)
 
 This property represents the ARN of a AWS role that will be associated to the deployed function.
+
+#### Configuration property: aws.bouncesTopic
+
+    Required: false
+    Type: string (AWS ARN)
+
+This property represents the ARN of the SNS topic that will be triggered/notified in case of bounced emails.
+
+#### Configuration property: aws.complaintsTopic
+
+    Required: false
+    Type: string (AWS ARN)
+
+This property represents the ARN of the SNS topic that will be triggered/notified in case of complaints.
+
+#### Configuration property: aws.deliveriesTopic
+
+    Required: false
+    Type: string (AWS ARN)
+
+This property represents the ARN of the SNS topic that will be triggered/notified when emails are delivered.
 
 ## Usage
 
