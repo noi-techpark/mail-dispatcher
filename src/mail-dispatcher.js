@@ -22,8 +22,18 @@ module.exports = class MailDispatcher {
         }
 
         if (!!self.configuration.defaultTo) {
+            if (!_.isArray(self.configuration.defaultTo)) {
+                self.configuration.defaultTo = [ self.configuration.defaultTo ]
+            }
+
             self.configuration.domains = self.configuration.domains.map((entry) => {
-                if (!entry.defaultTo) {
+                if (!!entry.defaultTo) {
+                    if (!_.isArray(entry.defaultTo)) {
+                        return _.extend(entry, {
+                            defaultTo: [ entry.defaultTo ]
+                        })
+                    }
+                } else {
                     return _.extend(entry, {
                         defaultTo: self.configuration.defaultTo
                     })
@@ -230,8 +240,10 @@ module.exports = class MailDispatcher {
                 } else {
                     self.configuration.domains.forEach((item) => {
                         if (address.includes('@' + item.domain)) {
-                            processedAddresses.push(item.defaultTo)
-                            resolvedQueue.push(item.defaultTo)
+                            item.defaultTo.forEach((to) => {
+                                processedAddresses.push(to)
+                                resolvedQueue.push(to)
+                            })
                         }
                     })
                 }
@@ -368,6 +380,24 @@ module.exports = class MailDispatcher {
                         })
                     })
                 }
+
+                return callback(null, [])
+            },
+
+            (items, callback) => {
+                items = items.filter((item) => !!item.from && !!item.to)
+
+                items.forEach((item) => {
+                    if (!_.isArray(item.from)) {
+                        item.from = [ item.from ]
+                    }
+
+                    if (!_.isArray(item.to)) {
+                        item.to = [ item.to ]
+                    }
+                })
+
+                return callback(null, items)
             },
 
             (items, callback) => {
@@ -376,14 +406,16 @@ module.exports = class MailDispatcher {
                 self.logger.log('info', 'Checking whether the mapped addresses are acyclic...')
 
                 var table = {}
-                items.forEach((item) => {
-                    table[item.from] = item.to
+                items.filter((item) => item.type === 'email').forEach((item) => {
+                    item.from.forEach((from) => {
+                        table[from] = item.to
+                    })
                 })
 
                 var invalid = []
                 var addresses = []
 
-                self.configuration.domains.map((item) => item.defaultTo).forEach((tos) => {
+                self.configuration.domains.filter((item) => !!item.defaultTo).map((item) => item.defaultTo).forEach((tos) => {
                     addresses = addresses.concat(tos)
                 })
 
@@ -414,14 +446,79 @@ module.exports = class MailDispatcher {
                     }
                 }
 
-                self.configuration.domains.forEach((item) => {
-                    functionConfiguration.mappings['@default'][item.domain] = item.defaultTo
+                // TODO add support for command/lmtp default destinations
+
+                self.configuration.domains.filter((item) => !!item.defaultTo).forEach((item) => {
+                    functionConfiguration.mappings['@default'][item.domain] = item.defaultTo.map((to) => {
+                        return {
+                            type: 'email',
+                            address: to
+                        }
+                    })
                 })
 
                 items.forEach((item) => {
-                    if (!!item.from && !!item.to) {
-                        functionConfiguration.mappings[item.from] = item.to
-                    }
+                    var triggers = {}
+
+                    item.from.forEach((from) => {
+                        if (_.isString(from)) {
+                            triggers[from] = {}
+                        }
+
+                        if (_.isObject(from) && !!from.type) {
+                            if (from.type === 'mailman') {
+                                var actions = {}
+                                actions[from.list] = 'post'
+                                actions[from.list + '-admin'] = 'admin'
+                                actions[from.list + '-bounces'] = 'bounces'
+                                actions[from.list + '-confirm'] = 'confirm'
+                                actions[from.list + '-join'] = 'join'
+                                actions[from.list + '-leave'] = 'leave'
+                                actions[from.list + '-owner'] = 'owner'
+                                actions[from.list + '-request'] = 'request'
+                                actions[from.list + '-subscribe'] = 'subscribe'
+                                actions[from.list + '-unsubscribe'] = 'unsubscribe'
+
+                                _.each(actions, (action, addressPart) => {
+                                    triggers[addressPart + '@' + from.domain] = {
+                                        'MAILMAN_ACTION': action,
+                                        'MAILMAN_LIST': from.list
+                                    }
+                                })
+                            }
+                        }
+                    })
+
+                    _.each(triggers, (context, from) => {
+                        functionConfiguration.mappings[from] = []
+                    })
+
+                    item.to.forEach((to) => {
+                        if (_.isString(to)) {
+                            _.each(triggers, (context, from) => {
+                                functionConfiguration.mappings[from].push({
+                                    type: 'email',
+                                    address: to
+                                })
+                            })
+                        }
+
+                        if (_.isObject(to) && !!to.type) {
+                            if (to.type === 'command') {
+                                _.each(triggers, (context, from) => {
+                                    var command = to.command
+
+                                    _.each(context, (value, key) => {
+                                        command = command.replace('{{' + key + '}}', value)
+                                    })
+
+                                    functionConfiguration.mappings[from].push(_.extend(_.clone(to), {
+                                        command: command
+                                    }))
+                                })
+                            }
+                        }
+                    })
                 })
 
                 return callback(null, functionConfiguration)
@@ -500,7 +597,7 @@ module.exports = class MailDispatcher {
                             return callback(null, functionConfiguration, data.Configuration.FunctionArn)
                         })
                     } else {
-                        self.call(lambda, 'createFunction', _.extend(configuration, {
+                        self.call(lambda, 'createFunction', _.extend(_.clone(configuration), {
                             Publish: true,
                             Code: {
                                 ZipFile: code

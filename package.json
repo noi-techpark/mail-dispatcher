@@ -8,6 +8,7 @@
         "globby": "^8.0.1",
         "request": "*",
         "retry": "*",
+        "simple-ssh": "*",
         "tmp": "0.0.33",
         "underscore": "^1.9.1",
         "winston": "*"

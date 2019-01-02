@@ -1,6 +1,7 @@
 const async = require('async')
 const AWS = require('aws-sdk')
 const fs = require('fs')
+const SSH = require('simple-ssh')
 
 const configuration = JSON.parse(fs.readFileSync(__dirname + '/config.json'))
 
@@ -8,31 +9,30 @@ exports.handler = (event, context, callback) => {
     const ses = new AWS.SES()
     const s3 = new AWS.S3({ signatureVersion: 'v4' })
 
+    if (!event || !event.hasOwnProperty('Records') || event.Records.length !== 1 || !event.Records[0].hasOwnProperty('eventSource') || event.Records[0].eventSource !== 'aws:ses' || event.Records[0].eventVersion !== '1.0') {
+        return callback(new Error('Invalid SES message received.'))
+    }
+
+    var record = event.Records[0]
+
+    var email = record.ses.mail
+
+    var recipients = {}
+    record.ses.receipt.recipients.forEach((recipient) => {
+        if (!!configuration.mappings[recipient]) {
+            recipients[recipient] = configuration.mappings[recipient]
+        } else {
+            var position = recipient.lastIndexOf('@')
+            if (position !== -1) {
+                recipients[recipient] = configuration.mappings['@default'][recipient.slice(position + 1)]
+            }
+        }
+    })
+
     async.waterfall([
 
         (callback) => {
-            if (!event || !event.hasOwnProperty('Records') || event.Records.length !== 1 || !event.Records[0].hasOwnProperty('eventSource') || event.Records[0].eventSource !== 'aws:ses' || event.Records[0].eventVersion !== '1.0') {
-                return callback(new Error('Invalid SES message received.'))
-}
-
-            callback(null, event.Records[0].ses.mail, event.Records[0].ses.receipt.recipients)
-        },
-
-        (email, recipients, callback) => {
-            var matches = {}
-
-            recipients.forEach((recipient) => {
-                if (!!configuration.mappings[recipient]) {
-                    matches[recipient] = configuration.mappings[recipient]
-                } else {
-                    var position = recipient.lastIndexOf('@')
-                    if (position !== -1) {
-                        matches[recipient] = configuration.mappings['@default'][recipient.slice(position + 1)]
-                    }
-                }
-            })
-
-            callback(null, email, matches)
+            callback(null, email, recipients)
         },
 
         (email, recipients, callback) => {
@@ -61,25 +61,18 @@ exports.handler = (event, context, callback) => {
             })
         },
 
-        (email, recipients, body, callback) => {
-            async.eachOfSeries(recipients, (recipients, originalRecipient, callback) => {
-                var match = body.match(/^((?:.+\r?\n)*)(\r?\n(?:.*\s+)*)/m)
-                var headerPart = match && match[1] ? match[1] : body
+        (email, recipients, message, callback) => {
+            async.eachOfSeries(recipients, (toRecipients, originalRecipient, callback) => {
+                var match = message.match(/^((?:.+\r?\n)*)(\r?\n(?:.*\s+)*)/m)
+                var headerPart = match && match[1] ? match[1] : message
                 var bodyPart = match && match[2] ? match[2] : ''
 
-                if (!/^Reply-To: /mi.test(headerPart)) {
-                    match = headerPart.match(/^From: (.*(?:\r?\n\s+.*)*\r?\n)/m)
-                    var from = match && match[1] ? match[1] : ''
-                    if (from) {
-                        headerPart = headerPart + 'Reply-To: ' + from
-                    }
-                }
+                match = headerPart.match(/^From: (.*(?:\r?\n\s+.*)*\r?\n)/m)
+                var from = match && match[1] ? match[1] : ''
 
-                headerPart = headerPart.replace(
-                    /^From: (.*(?:\r?\n\s+.*)*)/mg,
-                    (match, from) => {
-                        return 'From: ' + from.replace('<', 'at ').replace('>', '') + ' <' + originalRecipient + '>'
-                    })
+                if (!/^Reply-To: /mi.test(headerPart) && from) {
+                    headerPart = headerPart + 'Reply-To: ' + from
+                }
 
                 headerPart = headerPart.replace(/^Return-Path: (.*)\r?\n/mg, '')
 
@@ -93,29 +86,79 @@ exports.handler = (event, context, callback) => {
                 headerPart = headerPart.replace(/Received:/g, 'X-Original-Received:')
                 headerPart = headerPart.replace(/X-Original-Received-Tmp:/g, 'X-Original-Received:')
 
-                ses.sendRawEmail({
-                    Destinations: recipients,
-                    Source: originalRecipient,
-                    RawMessage: {
-                        Data: headerPart + bodyPart
-                    }
-                }, (err, data) => {
-                    if (!!err) {
-                        return callback(new Error('Email sending failed. ' + err.message))
+                async.mapSeries(toRecipients, (recipient, callback) => {
+                    if (recipient.type === 'email') {
+                        var rawMessage = headerPart.replace(
+                            /^From: (.*(?:\r?\n\s+.*)*)/mg,
+                            (match, from) => {
+                                return 'From: ' + originalRecipient
+                            }
+                        ) + bodyPart
+
+                        return ses.sendRawEmail({
+                            Destinations: [ recipient.address ],
+                            Source: originalRecipient,
+                            RawMessage: {
+                                Data: rawMessage
+                            }
+                        }, (err) => {
+                            if (!!err) {
+                                return callback(new Error('Email sending failed. ' + err.message))
+                            }
+
+                            console.log('Email forwarded from "%s" to "%s".', originalRecipient, recipient.address)
+
+                            return callback(null)
+                        })
                     }
 
-                    callback(null, email, recipients, body)
+                    if (recipient.type === 'command') {
+                        var rawMessage = headerPart + bodyPart
+
+                        var command = recipient.command
+                        command = command.replace('{{MESSAGE_ID}}', email.messageId)
+                        command = command.replace('{{DOMAIN}}', from.slice(from.lastIndexOf('@') + 1))
+                        command = command.replace('{{FROM}}', from)
+
+                        var ssh = new SSH({
+                            host: recipient.host,
+                            port: recipient.port,
+                            user: recipient.user,
+                            key: recipient.key
+                        })
+
+                        return ssh.exec(command, {
+                            in: rawMessage,
+                            exit: (code, stdout, stderr) => {
+                                if (code === 0) {
+                                    console.log('Email forwarded from "%s" to command "%s".', originalRecipient, recipient.command)
+
+                                    return callback(null)
+                                } else {
+                                    return callback(new Error('Error during command invocation: ' + stderr))
+                                }
+                            }
+                        }).start()
+                    }
+
+                    return callback(new Error('Unable to handle the recipient: ' + JSON.stringify(recipient)))
+                }, (err) => {
+                    if (!!err) {
+                        return callback(err)
+                    }
+
+                    return callback(null)
                 })
             }, (err) => {
                 if (!!err) {
                     return callback(err)
                 }
 
-                callback(null, email, recipients, body)
+                callback(null, email, recipients, message)
             })
         },
 
-        (email, recipients, body, callback) => {
+        (email, recipients, message, callback) => {
             s3.deleteObject({
                 Bucket: configuration.bucket,
                 Key: configuration.bucketPrefix + email.messageId
@@ -124,15 +167,19 @@ exports.handler = (event, context, callback) => {
                     return callback(new Error('Email sending failed. ' + err.message))
                 }
 
-                callback(null, email, recipients, body)
+                callback(null, email, recipients, message)
             })
         }
 
-    ], (err, email, recipients, body) => {
-        if (!!err) return console.error(err)
+    ], (err) => {
+        if (!!err) {
+            console.error('Error occurred while processing the email: ', err)
 
-        for (originalRecipient in recipients) {
-            console.log('Email forwarded from %s to [ %s ].', originalRecipient, recipients[originalRecipient].join(', '))
+            return callback(err)
+        } else {
+            console.log('Email processed successfully.')
+
+            return callback(null)
         }
     })
 }
