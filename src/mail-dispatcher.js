@@ -196,6 +196,78 @@ module.exports = class MailDispatcher {
 
                     return callback(null, domains)
                 })
+            },
+
+            (domains, callback) => {
+                if (_.isBoolean(self.configuration.aws.dkimEnabled)) {
+                    if (self.configuration.aws.dkimEnabled) {
+                        async.mapSeries(domains, (item, callback) => {
+                            async.waterfall([
+
+                                (callback) => {
+                                    setTimeout(() => {
+                                        self.call(ses, 'verifyDomainDkim', {
+                                            Domain: item.domain
+                                        }, (err) => {
+                                            if (!!err) {
+                                                self.logger.log('error', 'SES.verifyDomainDkim', err)
+                                                return callback(err)
+                                            }
+
+                                            callback(null)
+                                        })
+                                    }, 1000)
+                                },
+
+                                (callback) => {
+                                    self.call(ses, 'getIdentityDkimAttributes', {
+                                        Identities: [ item.domain ]
+                                    }, (err, data) => {
+                                        if (!!err) {
+                                            self.logger.log('error', 'SES.getIdentityDkimAttributes', err)
+                                            return callback(err)
+                                        }
+
+                                        var dkim = {
+                                            enabled: true,
+                                            verified: false,
+                                            records: {}
+                                        }
+
+                                        var attributes = data.DkimAttributes[item.domain]
+
+                                        dkim.verified = attributes.DkimVerificationStatus === 'Success'
+
+                                        _.each(attributes.DkimTokens, (token) => {
+                                            dkim.records[token + '._domainkey.' + item.domain] = token + '.dkim.amazonses.com'
+                                        })
+
+                                        return callback(null, _.extend(_.clone(item), {
+                                            dkim: dkim
+                                        }))
+                                    })
+                                }
+
+                            ], (err, domain) => {
+                                if (!!err) {
+                                    return callback(err)
+                                }
+
+                                return callback(null, domain)
+                            })
+                        }, (err, domains) => {
+                            if (!!err) {
+                                return callback(err)
+                            }
+
+                            return callback(null, domains)
+                        })
+                    } else {
+                        return callback(null, domains)
+                    }
+                } else {
+                    return callback(null, domains)
+                }
             }
 
         ], (err, domains) => {
@@ -212,6 +284,18 @@ module.exports = class MailDispatcher {
                 console.log('  > MX Record: inbound-smtp.%s.amazonaws.com', self.configuration.aws.region)
                 console.log('  > Verification Domain: _amazonses.%s', item.domain)
                 console.log('  > Verification Value (TXT): %s', item.token)
+
+                if (item.dkim && item.dkim.enabled) {
+                    console.log('  > DKIM: %s', item.dkim.verified ? colors.green('Verified') : colors.red('Pending'))
+
+                    _.each(item.dkim.records, (value, record) => {
+                        console.log('      > Name: %s', record)
+                        console.log('        Type: CNAME')
+                        console.log('        Value: %s', value)
+                    })
+                } else {
+                    console.log('  > DKIM: Disabled')
+                }
             })
         })
     }
@@ -274,7 +358,7 @@ module.exports = class MailDispatcher {
         async.waterfall([
 
             (callback) => {
-                self.logger.log('info', 'Checking that all configured domains have been verified...')
+                self.logger.log('info', 'Checking that all configured domains are ready to use...')
 
                 async.waterfall([
 
@@ -317,6 +401,57 @@ module.exports = class MailDispatcher {
                             }
                         })
                     },
+
+                    (callback) => {
+                        self.call(ses, 'getIdentityDkimAttributes', {
+                            Identities: self.configuration.domains.map((item) => item.domain)
+                        }, (err, data) => {
+                            if (!!err) {
+                                self.logger.log('error', 'SES.getIdentityDkimAttributes', err)
+                                return callback(err)
+                            }
+
+                            var updates = []
+
+                            _.each(data.DkimAttributes, (attributes, domain) => {
+                                if (_.isBoolean(self.configuration.aws.dkimEnabled)) {
+                                    if (self.configuration.aws.dkimEnabled && !attributes.DkimEnabled) {
+                                        updates.push({
+                                            Identity: domain,
+                                            DkimEnabled: true
+                                        })
+                                    }
+
+                                    if (!self.configuration.aws.dkimEnabled && attributes.DkimEnabled) {
+                                        updates.push({
+                                            Identity: domain,
+                                            DkimEnabled: false
+                                        })
+                                    }
+                                }
+                            })
+
+                            if (!!updates) {
+                                async.mapSeries(updates, (update, callback) => {
+                                    self.call(ses, 'setIdentityDkimEnabled', update, (err, data) => {
+                                        if (!!err) {
+                                            return callback(err)
+                                        }
+
+                                        return callback(null)
+                                    })
+                                }, (err) => {
+                                    if (!!err) {
+                                        return callback(err)
+                                    }
+
+                                    return callback(null)
+                                })
+                            } else {
+                                return callback(null)
+                            }
+                        })
+                    }
 
                 ], (err) => {
                     if (!!err) {
