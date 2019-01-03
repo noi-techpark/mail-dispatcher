@@ -317,6 +317,10 @@ If you use `from` elements of type "mailman", then the additional placeholder va
 * **MAILMAN_ACTION** (the associated Mailman action, e.g. "post", "join", ...)
 * **MAILMAN_LIST** (the name/slug of the mailing list)
 
+### Setup SPF
+
+Although not strictly necessary, it is advised to setup the Sender Policy Framework (SPF) for the associated domains so that the recipient's email server can verify and validate the incoming emails. [This page](https://docs.aws.amazon.com/ses/latest/DeveloperGuide/spf.html) describes how to setup the necessary DNS TXT records for authenticating AWS SES's servers to send emails for your domains.
+
 ## Usage
 
 The `mail-dispatcher` executable provides multiple sub-commands, namely
