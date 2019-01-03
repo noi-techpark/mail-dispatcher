@@ -22,8 +22,18 @@ module.exports = class MailDispatcher {
         }
 
         if (!!self.configuration.defaultTo) {
+            if (!_.isArray(self.configuration.defaultTo)) {
+                self.configuration.defaultTo = [ self.configuration.defaultTo ]
+            }
+
             self.configuration.domains = self.configuration.domains.map((entry) => {
-                if (!entry.defaultTo) {
+                if (!!entry.defaultTo) {
+                    if (!_.isArray(entry.defaultTo)) {
+                        return _.extend(entry, {
+                            defaultTo: [ entry.defaultTo ]
+                        })
+                    }
+                } else {
                     return _.extend(entry, {
                         defaultTo: self.configuration.defaultTo
                     })
@@ -186,6 +196,78 @@ module.exports = class MailDispatcher {
 
                     return callback(null, domains)
                 })
+            },
+
+            (domains, callback) => {
+                if (_.isBoolean(self.configuration.aws.dkimEnabled)) {
+                    if (self.configuration.aws.dkimEnabled) {
+                        async.mapSeries(domains, (item, callback) => {
+                            async.waterfall([
+
+                                (callback) => {
+                                    setTimeout(() => {
+                                        self.call(ses, 'verifyDomainDkim', {
+                                            Domain: item.domain
+                                        }, (err) => {
+                                            if (!!err) {
+                                                self.logger.log('error', 'SES.verifyDomainDkim', err)
+                                                return callback(err)
+                                            }
+
+                                            callback(null)
+                                        })
+                                    }, 1000)
+                                },
+
+                                (callback) => {
+                                    self.call(ses, 'getIdentityDkimAttributes', {
+                                        Identities: [ item.domain ]
+                                    }, (err, data) => {
+                                        if (!!err) {
+                                            self.logger.log('error', 'SES.getIdentityDkimAttributes', err)
+                                            return callback(err)
+                                        }
+
+                                        var dkim = {
+                                            enabled: true,
+                                            verified: false,
+                                            records: {}
+                                        }
+
+                                        var attributes = data.DkimAttributes[item.domain]
+
+                                        dkim.verified = attributes.DkimVerificationStatus === 'Success'
+
+                                        _.each(attributes.DkimTokens, (token) => {
+                                            dkim.records[token + '._domainkey.' + item.domain] = token + '.dkim.amazonses.com'
+                                        })
+
+                                        return callback(null, _.extend(_.clone(item), {
+                                            dkim: dkim
+                                        }))
+                                    })
+                                }
+
+                            ], (err, domain) => {
+                                if (!!err) {
+                                    return callback(err)
+                                }
+
+                                return callback(null, domain)
+                            })
+                        }, (err, domains) => {
+                            if (!!err) {
+                                return callback(err)
+                            }
+
+                            return callback(null, domains)
+                        })
+                    } else {
+                        return callback(null, domains)
+                    }
+                } else {
+                    return callback(null, domains)
+                }
             }
 
         ], (err, domains) => {
@@ -202,6 +284,18 @@ module.exports = class MailDispatcher {
                 console.log('  > MX Record: inbound-smtp.%s.amazonaws.com', self.configuration.aws.region)
                 console.log('  > Verification Domain: _amazonses.%s', item.domain)
                 console.log('  > Verification Value (TXT): %s', item.token)
+
+                if (item.dkim && item.dkim.enabled) {
+                    console.log('  > DKIM: %s', item.dkim.verified ? colors.green('Verified') : colors.red('Pending'))
+
+                    _.each(item.dkim.records, (value, record) => {
+                        console.log('      > Name: %s', record)
+                        console.log('        Type: CNAME')
+                        console.log('        Value: %s', value)
+                    })
+                } else {
+                    console.log('  > DKIM: Disabled')
+                }
             })
         })
     }
@@ -230,8 +324,10 @@ module.exports = class MailDispatcher {
                 } else {
                     self.configuration.domains.forEach((item) => {
                         if (address.includes('@' + item.domain)) {
-                            processedAddresses.push(item.defaultTo)
-                            resolvedQueue.push(item.defaultTo)
+                            item.defaultTo.forEach((to) => {
+                                processedAddresses.push(to)
+                                resolvedQueue.push(to)
+                            })
                         }
                     })
                 }
@@ -262,7 +358,7 @@ module.exports = class MailDispatcher {
         async.waterfall([
 
             (callback) => {
-                self.logger.log('info', 'Checking that all configured domains have been verified...')
+                self.logger.log('info', 'Checking that all configured domains are ready to use...')
 
                 async.waterfall([
 
@@ -305,6 +401,57 @@ module.exports = class MailDispatcher {
                             }
                         })
                     },
+
+                    (callback) => {
+                        self.call(ses, 'getIdentityDkimAttributes', {
+                            Identities: self.configuration.domains.map((item) => item.domain)
+                        }, (err, data) => {
+                            if (!!err) {
+                                self.logger.log('error', 'SES.getIdentityDkimAttributes', err)
+                                return callback(err)
+                            }
+
+                            var updates = []
+
+                            _.each(data.DkimAttributes, (attributes, domain) => {
+                                if (_.isBoolean(self.configuration.aws.dkimEnabled)) {
+                                    if (self.configuration.aws.dkimEnabled && !attributes.DkimEnabled) {
+                                        updates.push({
+                                            Identity: domain,
+                                            DkimEnabled: true
+                                        })
+                                    }
+
+                                    if (!self.configuration.aws.dkimEnabled && attributes.DkimEnabled) {
+                                        updates.push({
+                                            Identity: domain,
+                                            DkimEnabled: false
+                                        })
+                                    }
+                                }
+                            })
+
+                            if (!!updates) {
+                                async.mapSeries(updates, (update, callback) => {
+                                    self.call(ses, 'setIdentityDkimEnabled', update, (err, data) => {
+                                        if (!!err) {
+                                            return callback(err)
+                                        }
+
+                                        return callback(null)
+                                    })
+                                }, (err) => {
+                                    if (!!err) {
+                                        return callback(err)
+                                    }
+
+                                    return callback(null)
+                                })
+                            } else {
+                                return callback(null)
+                            }
+                        })
+                    }
 
                 ], (err) => {
                     if (!!err) {
@@ -368,6 +515,24 @@ module.exports = class MailDispatcher {
                         })
                     })
                 }
+
+                return callback(null, [])
+            },
+
+            (items, callback) => {
+                items = items.filter((item) => !!item.from && !!item.to)
+
+                items.forEach((item) => {
+                    if (!_.isArray(item.from)) {
+                        item.from = [ item.from ]
+                    }
+
+                    if (!_.isArray(item.to)) {
+                        item.to = [ item.to ]
+                    }
+                })
+
+                return callback(null, items)
             },
 
             (items, callback) => {
@@ -376,14 +541,16 @@ module.exports = class MailDispatcher {
                 self.logger.log('info', 'Checking whether the mapped addresses are acyclic...')
 
                 var table = {}
-                items.forEach((item) => {
-                    table[item.from] = item.to
+                items.filter((item) => item.type === 'email').forEach((item) => {
+                    item.from.forEach((from) => {
+                        table[from] = item.to
+                    })
                 })
 
                 var invalid = []
                 var addresses = []
 
-                self.configuration.domains.map((item) => item.defaultTo).forEach((tos) => {
+                self.configuration.domains.filter((item) => !!item.defaultTo).map((item) => item.defaultTo).forEach((tos) => {
                     addresses = addresses.concat(tos)
                 })
 
@@ -414,14 +581,81 @@ module.exports = class MailDispatcher {
                     }
                 }
 
-                self.configuration.domains.forEach((item) => {
-                    functionConfiguration.mappings['@default'][item.domain] = item.defaultTo
+                // TODO add support for command/lmtp default destinations
+
+                self.configuration.domains.filter((item) => !!item.defaultTo).forEach((item) => {
+                    functionConfiguration.mappings['@default'][item.domain] = item.defaultTo.map((to) => {
+                        return {
+                            type: 'email',
+                            address: to
+                        }
+                    })
                 })
 
                 items.forEach((item) => {
-                    if (!!item.from && !!item.to) {
-                        functionConfiguration.mappings[item.from] = item.to
-                    }
+                    var triggers = {}
+
+                    item.from.forEach((from) => {
+                        if (_.isString(from)) {
+                            triggers[from] = {}
+                        }
+
+                        if (_.isObject(from) && !!from.type) {
+                            if (from.type === 'mailman') {
+                                var actions = {}
+                                actions[from.list] = 'post'
+                                actions[from.list + '-admin'] = 'admin'
+                                actions[from.list + '-bounces'] = 'bounces'
+                                actions[from.list + '-confirm'] = 'confirm'
+                                actions[from.list + '-join'] = 'join'
+                                actions[from.list + '-leave'] = 'leave'
+                                actions[from.list + '-owner'] = 'owner'
+                                actions[from.list + '-request'] = 'request'
+                                actions[from.list + '-subscribe'] = 'subscribe'
+                                actions[from.list + '-unsubscribe'] = 'unsubscribe'
+
+                                _.each(actions, (action, addressPart) => {
+                                    triggers[addressPart + '@' + from.domain] = {
+                                        'MAILMAN_ACTION': action,
+                                        'MAILMAN_LIST': from.list
+                                    }
+                                })
+                            }
+                        }
+                    })
+
+                    _.each(triggers, (context, from) => {
+                        if (!_.has(functionConfiguration.mappings, from)) {
+                            functionConfiguration.mappings[from] = []
+                        }
+                    })
+
+                    item.to.forEach((to) => {
+                        if (_.isString(to)) {
+                            _.each(triggers, (context, from) => {
+                                functionConfiguration.mappings[from].push({
+                                    type: 'email',
+                                    address: to
+                                })
+                            })
+                        }
+
+                        if (_.isObject(to) && !!to.type) {
+                            if (to.type === 'command') {
+                                _.each(triggers, (context, from) => {
+                                    var command = to.command
+
+                                    _.each(context, (value, key) => {
+                                        command = command.replace('{{' + key + '}}', value)
+                                    })
+
+                                    functionConfiguration.mappings[from].push(_.extend(_.clone(to), {
+                                        command: command
+                                    }))
+                                })
+                            }
+                        }
+                    })
                 })
 
                 return callback(null, functionConfiguration)
@@ -500,7 +734,7 @@ module.exports = class MailDispatcher {
                             return callback(null, functionConfiguration, data.Configuration.FunctionArn)
                         })
                     } else {
-                        self.call(lambda, 'createFunction', _.extend(configuration, {
+                        self.call(lambda, 'createFunction', _.extend(_.clone(configuration), {
                             Publish: true,
                             Code: {
                                 ZipFile: code

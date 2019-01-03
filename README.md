@@ -164,27 +164,6 @@ or a local JSON file, like follows
         "uri": "https://etc.example.com/mail-dispatcher/mappings.json"
     }
 
-In both these cases, the structure of the file has to be structured like in the following example
-
-    [
-        {
-            "from": "all@mails.example.com",
-            "to": [
-                "administration@example.com",
-                "john.doe@example.com",
-                "jane.doe@example.com",
-                "support@example.com"
-            ]
-        },
-        {
-            "from": "tech@mails.example.com",
-            "to": [
-                "john.doe@example.com",
-                "jane.doe@example.com"
-            ]
-        }
-    ]
-
 #### Configuration property: defaultTo
 
     Required: false
@@ -257,6 +236,106 @@ This property represents the ARN of the SNS topic that will be triggered/notifie
 
 This property represents the ARN of the SNS topic that will be triggered/notified when emails are delivered.
 
+#### Configuration property: aws.dkimEnabled
+
+    Required: false
+    Type: boolean
+
+This property determines whether to configure and send emails signed with a DKIM cryptographic key.
+
+### Mappings
+
+Regardless of their location, the mappings file(s) have to be structured as in the following example
+
+    [
+        {
+            "from": "all@mails.example.com",
+            "to": [
+                "administration@example.com",
+                "john.doe@example.com",
+                "jane.doe@example.com",
+                "support@example.com"
+            ]
+        },
+        {
+            "from": "tech@mails.example.com",
+            "to": [
+                "john.doe@example.com",
+                "jane.doe@example.com"
+            ]
+        },
+        {
+            "from": [
+                "administration@mails.example.com",
+                "board@mails.example.com"
+            ],
+            "to": "administration@example.com"
+        }
+    ]
+
+If you specify/map the same address multiple times, then the resulting recipients will be merged together.
+
+#### Mappings property: from
+
+    Required: true
+    Type: single or array of
+              string (email), or
+              object (with structure {
+                  "type" = "email",
+                  "address" (string, email)
+              }), or
+              object (with structure {
+                  "type" = "mailman",
+                  "domain" (string),
+                  "list" (string)
+              })
+
+This property determines the email(s) on which to apply the mapped recipients.
+
+#### Mappings property: to
+
+    Required: true
+    Type: single or array of
+              string (email), or
+              object (with structure {
+                  "type" = "email",
+                  "address" (string, email)
+              }), or
+              object (with structure {
+                  "type" = "command",
+                  "host" (string),
+                  "port" (int),
+                  "user" (string),
+                  "password" (string),
+                  "key" (string, private key),
+                  "command" (string)
+              })
+
+This property determines the recipients which will receive or destinations which will process the incoming emails.
+
+If you decide to forward the emails to commands/scripts (via SSH), then you can use the following placeholders in the command's definition
+
+* **MESSAGE_ID** (unique email/message id)
+* **FROM** (the matched sender's address)
+* **DOMAIN** (the sender's address domain)
+
+If you use `from` elements of type "mailman", then the additional placeholder values are available
+
+* **MAILMAN_ACTION** (the associated Mailman action, e.g. "post", "join", ...)
+* **MAILMAN_LIST** (the name/slug of the mailing list)
+
+### Setup SPF
+
+Although not strictly necessary, it is advised to setup the Sender Policy Framework (SPF) for the associated domains so that the recipient's email server can verify and validate the incoming emails. [This page](https://docs.aws.amazon.com/ses/latest/DeveloperGuide/spf.html) describes how to setup the necessary DNS TXT records for authenticating AWS SES's servers to send emails for your domains.
+
+### Setup DKIM
+
+If you want to send emails signed with a DKIM cryptographic key, then you have to enable the configuration property `aws.dkimEnabled`.
+
+Running the `setup` command will output all DNS settings necessary for the DKIM signing to work correctly.
+
+If the DKIM settings have been correctly detected and verified by AWS SES, then this feature will be enabled only during the `deploy` phase and won't be enabled automatically.
+
 ## Usage
 
 The `mail-dispatcher` executable provides multiple sub-commands, namely
@@ -287,8 +366,11 @@ A typical output of this command looks as follows
     (3)   > MX Record: inbound-smtp.eu-west-1.amazonaws.com
     (4)   > Verification Domain: _amazonses.mails.example.com
     (5)   > Verification Value (TXT): 6sGk2GAyieeDhOdbGGNgifYeJo2PBDE4ZuHafLoKO/c=
+    (6)   > DKIM: Disabled
 
 In order to setup the domain you need to first configure the MX record on the domain (1) with value (3). Then you need to setup a TXT record on the verification domain (4) with value (5).
+
+If you have enabled the usage of DKIM signed emails, (6) and subsequent lines will contain all the DNS related setup necessary for correctly signing the outgoing emails.
 
 This command can be executed consecutively without consequences.
 
