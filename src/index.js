@@ -62,7 +62,7 @@ exports.handler = (event, context, callback) => {
         },
 
         (email, recipients, message, callback) => {
-            async.eachOfSeries(recipients, (toRecipients, originalRecipient, callback) => {
+            async.eachOf(recipients, (toRecipients, originalRecipient, callback) => {
                 var match = message.match(/^((?:.+\r?\n)*)(\r?\n(?:.*\s+)*)/m)
                 var headerPart = match && match[1] ? match[1] : message
                 var bodyPart = match && match[2] ? match[2] : ''
@@ -86,7 +86,7 @@ exports.handler = (event, context, callback) => {
                 headerPart = headerPart.replace(/Received:/g, 'X-Original-Received:')
                 headerPart = headerPart.replace(/X-Original-Received-Tmp:/g, 'X-Original-Received:')
 
-                async.mapSeries(toRecipients, (recipient, callback) => {
+                async.map(toRecipients, (recipient, callback) => {
                     if (recipient.type === 'email') {
                         var rawMessage = headerPart.replace(
                             /^From: (.*(?:\r?\n\s+.*)*)/mg,
