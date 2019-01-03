@@ -490,7 +490,9 @@ module.exports = class MailDispatcher {
                     })
 
                     _.each(triggers, (context, from) => {
-                        functionConfiguration.mappings[from] = []
+                        if (!_.has(functionConfiguration.mappings, from)) {
+                            functionConfiguration.mappings[from] = []
+                        }
                     })
 
                     item.to.forEach((to) => {

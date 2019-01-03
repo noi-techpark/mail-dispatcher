@@ -164,27 +164,6 @@ or a local JSON file, like follows
         "uri": "https://etc.example.com/mail-dispatcher/mappings.json"
     }
 
-In both these cases, the structure of the file has to be structured like in the following example
-
-    [
-        {
-            "from": "all@mails.example.com",
-            "to": [
-                "administration@example.com",
-                "john.doe@example.com",
-                "jane.doe@example.com",
-                "support@example.com"
-            ]
-        },
-        {
-            "from": "tech@mails.example.com",
-            "to": [
-                "john.doe@example.com",
-                "jane.doe@example.com"
-            ]
-        }
-    ]
-
 #### Configuration property: defaultTo
 
     Required: false
@@ -256,6 +235,87 @@ This property represents the ARN of the SNS topic that will be triggered/notifie
     Type: string (AWS ARN)
 
 This property represents the ARN of the SNS topic that will be triggered/notified when emails are delivered.
+
+### Mappings
+
+Regardless of their location, the mappings file(s) have to be structured as in the following example
+
+    [
+        {
+            "from": "all@mails.example.com",
+            "to": [
+                "administration@example.com",
+                "john.doe@example.com",
+                "jane.doe@example.com",
+                "support@example.com"
+            ]
+        },
+        {
+            "from": "tech@mails.example.com",
+            "to": [
+                "john.doe@example.com",
+                "jane.doe@example.com"
+            ]
+        },
+        {
+            "from": [
+                "administration@mails.example.com",
+                "board@mails.example.com"
+            ],
+            "to": "administration@example.com"
+        }
+    ]
+
+If you specify/map the same address multiple times, then the resulting recipients will be merged together.
+
+#### Mappings property: from
+
+    Required: true
+    Type: single or array of
+              string (email), or
+              object (with structure {
+                  "type" = "email",
+                  "address" (string, email)
+              }), or
+              object (with structure {
+                  "type" = "mailman",
+                  "domain" (string),
+                  "list" (string)
+              })
+
+This property determines the email(s) on which to apply the mapped recipients.
+
+#### Mappings property: to
+
+    Required: true
+    Type: single or array of
+              string (email), or
+              object (with structure {
+                  "type" = "email",
+                  "address" (string, email)
+              }), or
+              object (with structure {
+                  "type" = "command",
+                  "host" (string),
+                  "port" (int),
+                  "user" (string),
+                  "password" (string),
+                  "key" (string, private key),
+                  "command" (string)
+              })
+
+This property determines the recipients which will receive or destinations which will process the incoming emails.
+
+If you decide to forward the emails to commands/scripts (via SSH), then you can use the following placeholders in the command's definition
+
+* **MESSAGE_ID** (unique email/message id)
+* **FROM** (the matched sender's address)
+* **DOMAIN** (the sender's address domain)
+
+If you use `from` elements of type "mailman", then the additional placeholder values are available
+
+* **MAILMAN_ACTION** (the associated Mailman action, e.g. "post", "join", ...)
+* **MAILMAN_LIST** (the name/slug of the mailing list)
 
 ## Usage
 
