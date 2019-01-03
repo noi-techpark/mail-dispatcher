@@ -78,7 +78,7 @@ module.exports = class MailDispatcher {
         operation.attempt(() => {
             object[fn].apply(object, params.concat([
                 (err, data) => {
-                    if (!!err && err.code === 'TooManyRequestsException' && operation.retry(err)) {
+                    if (!!err && _.contains(['TooManyRequestsException', 'Throttling'], err.code) && operation.retry(err)) {
                         return
                     }
 
