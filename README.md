@@ -36,6 +36,10 @@ Make sure the following permissions/policies are configured
 - **AmazonSESFullAccess** (used to create/update verified domains and rules)
 - **AWSLambdaFullAccess** (used to create/update deployed function)
 
+If you use [Route53](https://aws.amazon.com/route53/) and would like to automatically configure the DNS records, add the following permission/policy
+
+- **AmazonRoute53FullAccess**
+
 After successful creation of the user, please take note of the created access/secret keys and indicate them in the configuration properties `aws.accessKey` and `aws.secretKey`.
 
 ### Setup role for AWS Lambda
@@ -208,6 +212,14 @@ This property represents the name of the S3 bucket that has been setup and confi
 
 This property is used to store the emails in the configured S3 bucket using a prefix ("subfolder"). If not specified or empty, the email will be stored temporarily in the root path of the bucket.
 
+#### Configuration property: aws.dnsConfigurationEnabled
+
+    Required: false
+    Type: boolean
+    Default: false
+
+This property determines whether to automatically create all the required DNS records using [Route53](https://aws.amazon.com/route53/).
+
 #### Configuration property: aws.functionRoleArn
 
     Required: true
@@ -236,10 +248,19 @@ This property represents the ARN of the SNS topic that will be triggered/notifie
 
 This property represents the ARN of the SNS topic that will be triggered/notified when emails are delivered.
 
+#### Configuration property: aws.spfEnabled
+
+    Required: false
+    Type: boolean
+    Default: false
+
+This property determines whether to configure the support for the Sender Policy Framework (SPF).
+
 #### Configuration property: aws.dkimEnabled
 
     Required: false
     Type: boolean
+    Default: false
 
 This property determines whether to configure and send emails signed with a DKIM cryptographic key.
 
@@ -367,6 +388,8 @@ A typical output of this command looks as follows
     (4)   > Verification Domain: _amazonses.mails.example.com
     (5)   > Verification Value (TXT): 6sGk2GAyieeDhOdbGGNgifYeJo2PBDE4ZuHafLoKO/c=
     (6)   > DKIM: Disabled
+
+If you aren't using [Route53](https://aws.amazon.com/route53/) or you haven't configured the `aws.dnsConfigurationEnabled` property, you will have to setup the required DNS entries manually.
 
 In order to setup the domain you need to first configure the MX record on the domain (1) with value (3). Then you need to setup a TXT record on the verification domain (4) with value (5).
 
