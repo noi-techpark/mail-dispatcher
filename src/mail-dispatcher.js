@@ -92,6 +92,7 @@ module.exports = class MailDispatcher {
         const self = this
 
         const ses = new AWS.SES()
+        const route53 = new AWS.Route53()
 
         async.waterfall([
 
@@ -265,6 +266,188 @@ module.exports = class MailDispatcher {
                     } else {
                         return callback(null, domains)
                     }
+                } else {
+                    return callback(null, domains)
+                }
+            },
+
+            (domains, callback) => {
+                if (!!self.configuration.aws.dnsConfigurationEnabled) {
+                    self.call(route53, 'listHostedZones', {
+                        MaxItems: '1000'
+                    }, (err, data) => {
+                        if (!!err) {
+                            self.logger.log('error', 'Route53.listHostedZones', err)
+                            return callback(err)
+                        }
+
+                        async.waterfall([
+
+                            (callback) => {
+                                async.map(domains, (item, callback) => {
+                                    var zones = data.HostedZones.filter((zone) => item.domain.endsWith(zone.Name.slice(0, -1)))
+
+                                    if (zones.length > 0) {
+                                        var zone = zones[0]
+
+                                        self.call(route53, 'listResourceRecordSets', {
+                                            HostedZoneId: zone.Id
+                                        }, (err, data) => {
+                                            if (!!err) {
+                                                self.logger.log('error', 'Route53.listResourceRecordSets', err)
+                                                return callback(err)
+                                            }
+
+                                            var records = []
+
+                                            _.each(data.ResourceRecordSets, (set) => {
+                                                _.each(set.ResourceRecords, (record) => {
+                                                    records.push({
+                                                        name: set.Name.slice(0, -1),
+                                                        type: set.Type,
+                                                        value: record.Value
+                                                    })
+                                                })
+                                            })
+
+                                            var pending = []
+
+                                            var verificationDomain = '_amazonses.' + item.domain
+                                            var verificationValue = '"' + item.token + '"'
+
+                                            if (records.filter((dnsRecord) => {
+                                                return dnsRecord.type === 'TXT' && dnsRecord.name === verificationDomain && dnsRecord.value === verificationValue
+                                            }).length === 0) {
+                                                pending.push({
+                                                    zone: zone,
+                                                    type: 'TXT',
+                                                    domain: verificationDomain,
+                                                    value: verificationValue
+                                                })
+                                            }
+
+                                            var mxDomain = item.domain
+                                            var mxValue = '10 inbound-smtp.eu-west-1.amazonaws.com'
+
+                                            if (records.filter((dnsRecord) => {
+                                                return dnsRecord.type === 'MX' && dnsRecord.name === mxDomain && dnsRecord.value === mxValue
+                                            }).length === 0) {
+                                                pending.push({
+                                                    zone: zone,
+                                                    type: 'MX',
+                                                    domain: mxDomain,
+                                                    value: mxValue
+                                                })
+                                            }
+
+                                            if (!!self.configuration.aws.spfEnabled) {
+                                                var spfDomain = item.domain
+                                                var spfValue = '"v=spf1 include:' + self.configuration.aws.region + '.amazonses.com ~all"'
+
+                                                if (records.filter((dnsRecord) => {
+                                                    return dnsRecord.type === 'TXT' && dnsRecord.name === spfDomain && dnsRecord.value === spfValue
+                                                }).length === 0) {
+                                                    pending.push({
+                                                        zone: zone,
+                                                        type: 'TXT',
+                                                        domain: spfDomain,
+                                                        value: spfValue
+                                                    })
+                                                }
+                                            }
+
+                                            if (!!self.configuration.aws.dkimEnabled) {
+                                                _.each(item.dkim.records, (value, domain) => {
+                                                    if (records.filter((dnsRecord) => {
+                                                        return dnsRecord.type === 'CNAME' && dnsRecord.name === domain && dnsRecord.value === value
+                                                    }).length === 0) {
+                                                        pending.push({
+                                                            zone: zone,
+                                                            type: 'CNAME',
+                                                            domain: domain,
+                                                            value: value
+                                                        })
+                                                    }
+                                                })
+                                            }
+
+                                            if (!!self.configuration.aws.spfEnabled || !!self.configuration.aws.dkimEnabled) {
+                                                var dmarcDomain = '_dmarc.' + item.domain
+                                                var dmarcValue = '"v=DMARC1;p=quarantine;pct=25;rua=mailto:dmarc@' + item.domain + '"'
+
+                                                if (records.filter((dnsRecord) => {
+                                                    return dnsRecord.type === 'TXT' && dnsRecord.name === dmarcDomain && dnsRecord.value === dmarcValue
+                                                }).length === 0) {
+                                                    pending.push({
+                                                        zone: zone,
+                                                        type: 'TXT',
+                                                        domain: dmarcDomain,
+                                                        value: dmarcValue
+                                                    })
+                                                }
+                                            }
+
+                                            return callback(null, pending)
+                                        })
+                                    } else {
+                                        return callback(null, [])
+                                    }
+                                }, (err, pending) => {
+                                    if (!!err) {
+                                        return callback(err)
+                                    }
+
+                                    callback(null, _.flatten(pending, true))
+                                })
+                            },
+
+                            (pending, callback) => {
+                                async.mapSeries(pending, (record, callback) => {
+                                    self.call(route53, 'changeResourceRecordSets', {
+                                        HostedZoneId: record.zone.Id,
+                                        ChangeBatch: {
+                                            Changes: [
+                                                {
+                                                    Action: 'CREATE',
+                                                    ResourceRecordSet: {
+                                                        Name: record.domain,
+                                                        Type: record.type,
+                                                        TTL: 300,
+                                                        ResourceRecords: [
+                                                            {
+                                                                Value: record.value
+                                                            }
+                                                        ]
+                                                    }
+                                                }
+                                            ]
+                                        }
+                                    }, (err) => {
+                                        if (!!err) {
+                                            self.logger.log('error', 'Route53.changeResourceRecordSets', err)
+                                            return callback(err)
+                                        }
+
+                                        return callback(null)
+                                    })
+                                }, (err) => {
+                                    if (!!err) {
+                                        return callback(err)
+                                    }
+
+                                    return callback(null)
+                                })
+                            }
+
+                        ], (err) => {
+                            if (!!err) {
+                                return callback(err)
+                            }
+
+                            return callback(null, domains)
+                        })
+
+                    })
                 } else {
                     return callback(null, domains)
                 }
