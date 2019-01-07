@@ -327,10 +327,11 @@ module.exports = class MailDispatcher {
                                             }
 
                                             var mxDomain = item.domain
-                                            var mxValue = '10 inbound-smtp.eu-west-1.amazonaws.com'
+                                            var mxHost = 'inbound-smtp.' + self.configuration.aws.region + '.amazonaws.com'
+                                            var mxValue = '10 ' + mxHost
 
                                             if (records.filter((dnsRecord) => {
-                                                return dnsRecord.type === 'MX' && dnsRecord.name === mxDomain && dnsRecord.value === mxValue
+                                                return dnsRecord.type === 'MX' && dnsRecord.name === mxDomain && dnsRecord.value.includes(mxHost)
                                             }).length === 0) {
                                                 pending.push({
                                                     zone: zone,
