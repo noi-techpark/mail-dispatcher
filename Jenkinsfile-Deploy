@@ -1,0 +1,42 @@
+pipeline {
+    agent {
+        dockerfile{
+            filename 'docker/DOCKERFILE' 
+            additionalBuildArgs '--build-arg JENKINS_USER_ID=`id -u jenkins` --build-arg JENKINS_GROUP_ID=`id -g jenkins`'
+        }
+    }
+
+    environment {
+        MAIL_DISPATCHER_CONFIG = credentials('mail-dispatcher-config')
+        MAIL_DISPATCHER_MAPPING = credentials('mail-dispatcher-mapping')
+    }
+
+    stages {
+        stage('Configure') {
+            steps {
+               sh 'cat "${MAIL_DISPATCHER_CONFIG}" > config.json'
+               sh 'cat "${MAIL_DISPATCHER_MAPPING}" > mapping.json'
+            }
+        }
+        stage('Update Dependencies') {
+            steps {
+               sh 'npm install'
+            }
+        }
+        stage('Setup') {
+            steps {
+               sh './mail-dispatcher setup'
+            }
+        }
+        stage('Deploy') {
+            steps {
+               sh './mail-dispatcher deploy'
+            }
+        }
+        stage('Cleanup') {
+            steps {
+               sh 'rm config.json mapping.json'
+            }
+        }
+    }
+}
