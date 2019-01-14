@@ -68,7 +68,6 @@ module.exports = class MailDispatcher {
     }
 
     call(object, fn) {
-        const self = this
         const args = Array.from(arguments)
         const params = args.slice(2, args.length - 1)
         const callback = args[args.length - 1]
@@ -285,6 +284,8 @@ module.exports = class MailDispatcher {
 
                             (callback) => {
                                 async.map(domains, (item, callback) => {
+                                    item.warnings = []
+
                                     var zones = data.HostedZones.filter((zone) => item.domain.endsWith(zone.Name.slice(0, -1)))
 
                                     if (zones.length > 0) {
@@ -333,12 +334,18 @@ module.exports = class MailDispatcher {
                                             if (records.filter((dnsRecord) => {
                                                 return dnsRecord.type === 'MX' && dnsRecord.name === mxDomain && dnsRecord.value.includes(mxHost)
                                             }).length === 0) {
-                                                pending.push({
-                                                    zone: zone,
-                                                    type: 'MX',
-                                                    domain: mxDomain,
-                                                    value: mxValue
-                                                })
+                                                if (records.filter((dnsRecord) => {
+                                                    return dnsRecord.type === 'MX' && dnsRecord.name === mxDomain
+                                                }).length === 0) {
+                                                    pending.push({
+                                                        zone: zone,
+                                                        type: 'MX',
+                                                        domain: mxDomain,
+                                                        value: mxValue
+                                                    })
+                                                } else {
+                                                    item.warnings.push('Found existing MX record')
+                                                }
                                             }
 
                                             if (!!self.configuration.aws.spfEnabled) {
@@ -348,12 +355,18 @@ module.exports = class MailDispatcher {
                                                 if (records.filter((dnsRecord) => {
                                                     return dnsRecord.type === 'TXT' && dnsRecord.name === spfDomain && dnsRecord.value === spfValue
                                                 }).length === 0) {
-                                                    pending.push({
-                                                        zone: zone,
-                                                        type: 'TXT',
-                                                        domain: spfDomain,
-                                                        value: spfValue
-                                                    })
+                                                    if (records.filter((dnsRecord) => {
+                                                        return dnsRecord.type === 'TXT' && dnsRecord.name === spfDomain && dnsRecord.value.includes('v=spf1')
+                                                    }).length === 0) {
+                                                        pending.push({
+                                                            zone: zone,
+                                                            type: 'TXT',
+                                                            domain: spfDomain,
+                                                            value: spfValue
+                                                        })
+                                                    } else {
+                                                        item.warnings.push('Found existing SPF/TXT record')
+                                                    }
                                                 }
                                             }
 
@@ -379,12 +392,18 @@ module.exports = class MailDispatcher {
                                                 if (records.filter((dnsRecord) => {
                                                     return dnsRecord.type === 'TXT' && dnsRecord.name === dmarcDomain && dnsRecord.value === dmarcValue
                                                 }).length === 0) {
-                                                    pending.push({
-                                                        zone: zone,
-                                                        type: 'TXT',
-                                                        domain: dmarcDomain,
-                                                        value: dmarcValue
-                                                    })
+                                                    if (records.filter((dnsRecord) => {
+                                                        return dnsRecord.type === 'TXT' && dnsRecord.name === dmarcDomain && dnsRecord.value.includes('v=DMARC1')
+                                                    }).length === 0) {
+                                                        pending.push({
+                                                            zone: zone,
+                                                            type: 'TXT',
+                                                            domain: dmarcDomain,
+                                                            value: dmarcValue
+                                                        })
+                                                    } else {
+                                                        item.warnings.push('Found existing DMARC/TXT record')
+                                                    }
                                                 }
                                             }
 
@@ -479,6 +498,14 @@ module.exports = class MailDispatcher {
                     })
                 } else {
                     console.log('  > DKIM: Disabled')
+                }
+
+                if (item.warnings) {
+                    console.log('  > Warnings:')
+
+                    _.each(item.warnings, (warning) => {
+                        console.log('      > %s', colors.yellow(warning))
+                    })
                 }
             })
         })
