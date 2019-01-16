@@ -879,9 +879,10 @@ module.exports = class MailDispatcher {
 
                 fs.writeFileSync(packageDir.name + '/config.json', JSON.stringify(functionConfiguration))
 
+                fs.copySync(__dirname + '/mail-dispatcher-error.js', packageDir.name + '/error.js')
                 fs.copySync(__dirname + '/index.js', packageDir.name + '/index.js')
 
-                child_process.exec('zip -rq -X "' + packageFile + '" ./node_modules ./config.json ./index.js', { cwd: packageDir.name }, () => {
+                child_process.exec('zip -rq -X "' + packageFile + '" ./node_modules ./config.json ./error.js ./index.js', { cwd: packageDir.name }, () => {
                     return callback(null, functionConfiguration)
                 })
             },

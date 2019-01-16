@@ -1,6 +1,7 @@
 const async = require('async')
 const AWS = require('aws-sdk')
 const fs = require('fs')
+const MailDispatcherError = require('./error')
 const SSH = require('simple-ssh')
 
 const configuration = JSON.parse(fs.readFileSync(__dirname + '/config.json'))
@@ -103,7 +104,7 @@ exports.handler = (event, context, callback) => {
                             }
                         }, (err) => {
                             if (!!err) {
-                                return callback(new Error('Email sending failed. ' + err.message))
+                                return callback(new MailDispatcherError('Email sending failed. ' + err.message, message))
                             }
 
                             console.log('Email forwarded from "%s" to "%s".', originalRecipient, recipient.address)
@@ -135,7 +136,7 @@ exports.handler = (event, context, callback) => {
 
                                     return callback(null)
                                 } else {
-                                    return callback(new Error('Error during command invocation: ' + stderr))
+                                    return callback(new MailDispatcherError('Error during command invocation: ' + stderr, message))
                                 }
                             }
                         }).start()
@@ -162,9 +163,9 @@ exports.handler = (event, context, callback) => {
             s3.deleteObject({
                 Bucket: configuration.bucket,
                 Key: configuration.bucketPrefix + email.messageId
-            }, (err, data) => {
+            }, (err) => {
                 if (!!err) {
-                    return callback(new Error('Email sending failed. ' + err.message))
+                    return callback(new Error('Email cleanup failed. ' + err.message))
                 }
 
                 callback(null, email, recipients, message)
