@@ -28,11 +28,6 @@ pipeline {
                sh './mail-dispatcher setup'
             }
         }
-        stage('Deploy') {
-            steps {
-               sh './mail-dispatcher deploy'
-            }
-        }
         stage('Cleanup') {
             steps {
                sh 'rm config.json mapping.json'
