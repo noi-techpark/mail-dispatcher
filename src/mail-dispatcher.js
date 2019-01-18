@@ -387,23 +387,17 @@ module.exports = class MailDispatcher {
 
                                             if (!!self.configuration.aws.spfEnabled || !!self.configuration.aws.dkimEnabled) {
                                                 var dmarcDomain = '_dmarc.' + item.domain
-                                                var dmarcValue = '"v=DMARC1;p=quarantine;pct=25;rua=mailto:dmarc@' + item.domain + '"'
+                                                var dmarcValue = '"v=DMARC1;p=quarantine;pct=100"'
 
                                                 if (records.filter((dnsRecord) => {
                                                     return dnsRecord.type === 'TXT' && dnsRecord.name === dmarcDomain && dnsRecord.value === dmarcValue
                                                 }).length === 0) {
-                                                    if (records.filter((dnsRecord) => {
-                                                        return dnsRecord.type === 'TXT' && dnsRecord.name === dmarcDomain && dnsRecord.value.includes('v=DMARC1')
-                                                    }).length === 0) {
-                                                        pending.push({
-                                                            zone: zone,
-                                                            type: 'TXT',
-                                                            domain: dmarcDomain,
-                                                            value: dmarcValue
-                                                        })
-                                                    } else {
-                                                        item.warnings.push('Found existing DMARC/TXT record')
-                                                    }
+                                                    pending.push({
+                                                        zone: zone,
+                                                        type: 'TXT',
+                                                        domain: dmarcDomain,
+                                                        value: dmarcValue
+                                                    })
                                                 }
                                             }
 
