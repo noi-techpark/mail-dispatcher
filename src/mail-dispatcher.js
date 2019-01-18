@@ -494,7 +494,7 @@ module.exports = class MailDispatcher {
                     console.log('  > DKIM: Disabled')
                 }
 
-                if (item.warnings) {
+                if (!!item.warnings && item.warnings.length > 0) {
                     console.log('  > Warnings:')
 
                     _.each(item.warnings, (warning) => {
