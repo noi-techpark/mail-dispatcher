@@ -253,6 +253,14 @@ This property represents the ARN of the SNS topic that will be triggered/notifie
 
 This property represents the ARN of the SNS topic that will be triggered/notified when emails are delivered.
 
+#### Configuration property: aws.scanEnabled
+
+    Required: false
+    Type: boolean
+    Default: true
+
+This property determines whether to enable the spam/virus scanning for incoming emails.
+
 #### Configuration property: aws.spfEnabled
 
     Required: false
