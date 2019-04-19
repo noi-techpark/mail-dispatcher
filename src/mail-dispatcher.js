@@ -896,7 +896,7 @@ module.exports = class MailDispatcher {
                         FunctionName: self.configuration.resourceName,
                         Handler: 'index.handler',
                         Runtime: 'nodejs8.10',
-                        MemorySize: 128,
+                        MemorySize: 512,
                         Role: self.configuration.aws.functionRoleArn,
                         Timeout: 30
                     }

@@ -58,12 +58,14 @@ exports.handler = (event, context, callback) => {
                     }
 
                     callback(null, email, recipients, data.Body.toString())
+
+                    data = null
                 })
             })
         },
 
         (email, recipients, message, callback) => {
-            async.eachOf(recipients, (toRecipients, originalRecipient, callback) => {
+            async.eachOfSeries(recipients, (toRecipients, originalRecipient, callback) => {
                 var match = message.match(/^((?:.+\r?\n)*)(\r?\n(?:.*\s+)*)/m)
                 var headerPart = match && match[1] ? match[1] : message
                 var bodyPart = match && match[2] ? match[2] : ''
@@ -87,7 +89,9 @@ exports.handler = (event, context, callback) => {
                 headerPart = headerPart.replace(/Received:/g, 'X-Original-Received:')
                 headerPart = headerPart.replace(/X-Original-Received-Tmp:/g, 'X-Original-Received:')
 
-                async.map(toRecipients, (recipient, callback) => {
+                match = null
+
+                async.mapSeries(toRecipients, (recipient, callback) => {
                     if (recipient.type === 'email') {
                         var rawMessage = headerPart.replace(
                             /^From: (.*(?:\r?\n\s+.*)*)/mg,
@@ -103,6 +107,8 @@ exports.handler = (event, context, callback) => {
                                 Data: rawMessage
                             }
                         }, (err) => {
+                            rawMessage = null
+
                             if (!!err) {
                                 return callback(new MailDispatcherError('Email sending failed. ' + err.message, message))
                             }
@@ -131,6 +137,10 @@ exports.handler = (event, context, callback) => {
                         return ssh.exec(command, {
                             in: rawMessage,
                             exit: (code, stdout, stderr) => {
+                                rawMessage = null
+                                command = null
+                                ssh = null
+
                                 if (code === 0) {
                                     console.log('Email forwarded from "%s" to command "%s".', originalRecipient, recipient.command)
 
@@ -144,6 +154,10 @@ exports.handler = (event, context, callback) => {
 
                     return callback(new Error('Unable to handle the recipient: ' + JSON.stringify(recipient)))
                 }, (err) => {
+                    match = null
+                    headerPart = null
+                    bodyPart = null
+
                     if (!!err) {
                         return callback(err)
                     }
@@ -151,15 +165,17 @@ exports.handler = (event, context, callback) => {
                     return callback(null)
                 })
             }, (err) => {
+                message = null
+
                 if (!!err) {
                     return callback(err)
                 }
 
-                callback(null, email, recipients, message)
+                callback(null, email, recipients)
             })
         },
 
-        (email, recipients, message, callback) => {
+        (email, recipients, callback) => {
             s3.deleteObject({
                 Bucket: configuration.bucket,
                 Key: configuration.bucketPrefix + email.messageId
@@ -168,7 +184,7 @@ exports.handler = (event, context, callback) => {
                     return callback(new Error('Email cleanup failed. ' + err.message))
                 }
 
-                callback(null, email, recipients, message)
+                callback(null, email, recipients)
             })
         }
 
