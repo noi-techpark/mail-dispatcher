@@ -57,122 +57,178 @@ exports.handler = (event, context, callback) => {
                         return callback(new Error('Failed to load email from S3. ' + err.message))
                     }
 
-                    callback(null, email, recipients, data.Body.toString())
+                    callback(null, email, recipients, data.ContentLength, data.Body.toString())
 
                     data = null
                 })
             })
         },
 
-        (email, recipients, message, callback) => {
-            async.eachOfSeries(recipients, (toRecipients, originalRecipient, callback) => {
-                var match = message.match(/^((?:.+\r?\n)*)(\r?\n(?:.*\s+)*)/m)
-                var headerPart = match && match[1] ? match[1] : message
-                var bodyPart = match && match[2] ? match[2] : ''
+        (email, recipients, messageLength, message, callback) => {
+            if (messageLength < 10485760) {
+                async.eachOfSeries(recipients, (toRecipients, originalRecipient, callback) => {
+                    var match = message.match(/^((?:.+\r?\n)*)(\r?\n(?:.*\s+)*)/m)
+                    var headerPart = match && match[1] ? match[1] : message
+                    var bodyPart = match && match[2] ? match[2] : ''
 
-                match = headerPart.match(/^From: (.*(?:\r?\n\s+.*)*\r?\n)/m)
-                var from = match && match[1] ? match[1] : ''
+                    match = headerPart.match(/^From: (.*(?:\r?\n\s+.*)*\r?\n)/m)
+                    var from = match && match[1] ? match[1] : ''
 
-                if (!/^Reply-To: /mi.test(headerPart) && from) {
-                    headerPart = headerPart + 'Reply-To: ' + from
-                }
-
-                headerPart = headerPart.replace(/^Return-Path: (.*)\r?\n/mg, '')
-
-                headerPart = headerPart.replace(/^Sender: (.*)\r?\n/mg, '')
-
-                headerPart = headerPart.replace(/^Message-ID: (.*)\r?\n/mig, '')
-
-                headerPart = headerPart.replace(/^DKIM-Signature: .*\r?\n(\s+.*\r?\n)*/mg, '')
-
-                headerPart = headerPart.replace(/X-Original-Received:/g, 'X-Original-Received-Tmp:')
-                headerPart = headerPart.replace(/Received:/g, 'X-Original-Received:')
-                headerPart = headerPart.replace(/X-Original-Received-Tmp:/g, 'X-Original-Received:')
-
-                match = null
-
-                async.mapSeries(toRecipients, (recipient, callback) => {
-                    if (recipient.type === 'email') {
-                        var rawMessage = headerPart.replace(
-                            /^From: (.*(?:\r?\n\s+.*)*)/mg,
-                            (match, from) => {
-                                return 'From: ' + originalRecipient
-                            }
-                        ) + bodyPart
-
-                        return ses.sendRawEmail({
-                            Destinations: [ recipient.address ],
-                            Source: originalRecipient,
-                            RawMessage: {
-                                Data: rawMessage
-                            }
-                        }, (err) => {
-                            rawMessage = null
-
-                            if (!!err) {
-                                return callback(new MailDispatcherError('Email sending failed. ' + err.message, message))
-                            }
-
-                            console.log('Email forwarded from "%s" to "%s".', originalRecipient, recipient.address)
-
-                            return callback(null)
-                        })
+                    if (!/^Reply-To: /mi.test(headerPart) && from) {
+                        headerPart = headerPart + 'Reply-To: ' + from
                     }
 
-                    if (recipient.type === 'command') {
-                        var rawMessage = headerPart + bodyPart
+                    headerPart = headerPart.replace(/^Return-Path: (.*)\r?\n/mg, '')
 
-                        var command = recipient.command
-                        command = command.replace('{{MESSAGE_ID}}', email.messageId)
-                        command = command.replace('{{DOMAIN}}', from.slice(from.lastIndexOf('@') + 1))
-                        command = command.replace('{{FROM}}', from)
+                    headerPart = headerPart.replace(/^Sender: (.*)\r?\n/mg, '')
 
-                        var ssh = new SSH({
-                            host: recipient.host,
-                            port: recipient.port,
-                            user: recipient.user,
-                            key: recipient.key
-                        })
+                    headerPart = headerPart.replace(/^Message-ID: (.*)\r?\n/mig, '')
 
-                        return ssh.exec(command, {
-                            in: rawMessage,
-                            exit: (code, stdout, stderr) => {
-                                rawMessage = null
-                                command = null
-                                ssh = null
+                    headerPart = headerPart.replace(/^DKIM-Signature: .*\r?\n(\s+.*\r?\n)*/mg, '')
 
-                                if (code === 0) {
-                                    console.log('Email forwarded from "%s" to command "%s".', originalRecipient, recipient.command)
+                    headerPart = headerPart.replace(/X-Original-Received:/g, 'X-Original-Received-Tmp:')
+                    headerPart = headerPart.replace(/Received:/g, 'X-Original-Received:')
+                    headerPart = headerPart.replace(/X-Original-Received-Tmp:/g, 'X-Original-Received:')
 
-                                    return callback(null)
-                                } else {
-                                    return callback(new MailDispatcherError('Error during command invocation: ' + stderr, message))
-                                }
-                            }
-                        }).start()
-                    }
-
-                    return callback(new Error('Unable to handle the recipient: ' + JSON.stringify(recipient)))
-                }, (err) => {
                     match = null
-                    headerPart = null
-                    bodyPart = null
+
+                    async.mapSeries(toRecipients, (recipient, callback) => {
+                        if (recipient.type === 'email') {
+                            var rawMessage = headerPart.replace(
+                                /^From: (.*(?:\r?\n\s+.*)*)/mg,
+                                (match, from) => {
+                                    return 'From: ' + originalRecipient
+                                }
+                            ) + bodyPart
+
+                            return ses.sendRawEmail({
+                                Destinations: [ recipient.address ],
+                                Source: originalRecipient,
+                                RawMessage: {
+                                    Data: rawMessage
+                                }
+                            }, (err) => {
+                                rawMessage = null
+
+                                if (!!err) {
+                                    return callback(new MailDispatcherError('Email sending failed. ' + err.message, message))
+                                }
+
+                                console.log('Email forwarded from "%s" to "%s".', originalRecipient, recipient.address)
+
+                                return callback(null)
+                            })
+                        }
+
+                        if (recipient.type === 'command') {
+                            var rawMessage = headerPart + bodyPart
+
+                            var command = recipient.command
+                            command = command.replace('{{MESSAGE_ID}}', email.messageId)
+                            command = command.replace('{{DOMAIN}}', from.slice(from.lastIndexOf('@') + 1))
+                            command = command.replace('{{FROM}}', from)
+
+                            var ssh = new SSH({
+                                host: recipient.host,
+                                port: recipient.port,
+                                user: recipient.user,
+                                key: recipient.key
+                            })
+
+                            return ssh.exec(command, {
+                                in: rawMessage,
+                                exit: (code, stdout, stderr) => {
+                                    rawMessage = null
+                                    command = null
+                                    ssh = null
+
+                                    if (code === 0) {
+                                        console.log('Email forwarded from "%s" to command "%s".', originalRecipient, recipient.command)
+
+                                        return callback(null)
+                                    } else {
+                                        return callback(new MailDispatcherError('Error during command invocation: ' + stderr, message))
+                                    }
+                                }
+                            }).start()
+                        }
+
+                        return callback(new Error('Unable to handle the recipient: ' + JSON.stringify(recipient)))
+                    }, (err) => {
+                        match = null
+                        headerPart = null
+                        bodyPart = null
+
+                        if (!!err) {
+                            return callback(err)
+                        }
+
+                        return callback(null)
+                    })
+                }, (err) => {
+                    message = null
 
                     if (!!err) {
                         return callback(err)
                     }
 
-                    return callback(null)
+                    callback(null, email, recipients)
                 })
-            }, (err) => {
-                message = null
+            } else {
+                var match
 
-                if (!!err) {
-                    return callback(err)
+                match = message.match(/^((?:.+\r?\n)*)(\r?\n(?:.*\s+)*)/m)
+                var headerPart = match && match[1] ? match[1] : message
+
+                match = headerPart.match(/^From: (.*(?:\r?\n\s+.*)*\r?\n)/m)
+                var from = match && match[1] ? match[1] : ''
+
+                match = headerPart.match(/^To: (.*(?:\r?\n\s+.*)*\r?\n)/m)
+                var to = match && match[1] ? match[1] : ''
+
+                match = headerPart.match(/^Subject: (.*(?:\r?\n\s+.*)*\r?\n)/m)
+                var subject = match && match[1] ? match[1] : ''
+
+                if (!!from && !!to) {
+                    ses.sendEmail({
+                        Source: to,
+                        Destination: {
+                            ToAddresses: [ from ]
+                        },
+                        Message: {
+                            Subject: {
+                                Charset: 'UTF-8',
+                                Data: 'Re: ' + subject
+                            },
+                            Body: {
+                                Text: {
+                                    Charset: 'UTF-8',
+                                    Data:
+                                        'This is an automatically generated Delivery Status Notification. The message size exceeds the allowable limit (10MB).\n' +
+                                        '\n' +
+                                        '552 5.3.4 Message size exceeds fixed limit\n' +
+                                        'Final-Recipient: rfc822; ' + from.trim() + '\n' +
+                                        'Action: failed\n' +
+                                        'Status: 5.3.4\n' +
+                                        'Remote-MTA: dns; inbound-smtp.' + configuration.region + '.amazonaws.com\n' +
+                                        'Diagnostic-Code: smtp; 552 5.3.4 Message size exceeds fixed limit\n' +
+                                        'Last-Attempt-Date: ' + (new Date()).toUTCString()
+                                }
+                            }
+                        }
+                    }, (err) => {
+                        if (!!err) {
+                            return callback(new MailDispatcherError('Fallback email sending failed. ' + err.message, null))
+                        }
+
+                        console.log('Fallback email sent to "%s".', from)
+
+                        return callback(null, email, recipients)
+                    })
+                } else {
+                    return callback(new MailDispatcherError('Fallback email sending failed, unable to determine the sender address.', null))
                 }
-
-                callback(null, email, recipients)
-            })
+            }
         },
 
         (email, recipients, callback) => {

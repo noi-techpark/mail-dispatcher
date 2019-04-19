@@ -62,6 +62,11 @@ The role can be based on the following role policy, but it is also possible to u
             },
             {
                 "Effect": "Allow",
+                "Action": "ses:SendEmail",
+                "Resource": "*"
+            },
+            {
+                "Effect": "Allow",
                 "Action": "ses:SendRawEmail",
                 "Resource": "*"
             },
