@@ -62,6 +62,11 @@ The role can be based on the following role policy, but it is also possible to u
             },
             {
                 "Effect": "Allow",
+                "Action": "ses:SendEmail",
+                "Resource": "*"
+            },
+            {
+                "Effect": "Allow",
                 "Action": "ses:SendRawEmail",
                 "Resource": "*"
             },
@@ -247,6 +252,14 @@ This property represents the ARN of the SNS topic that will be triggered/notifie
     Type: string (AWS ARN)
 
 This property represents the ARN of the SNS topic that will be triggered/notified when emails are delivered.
+
+#### Configuration property: aws.scanEnabled
+
+    Required: false
+    Type: boolean
+    Default: true
+
+This property determines whether to enable the spam/virus scanning for incoming emails.
 
 #### Configuration property: aws.spfEnabled
 

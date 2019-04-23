@@ -54,6 +54,10 @@ module.exports = class MailDispatcher {
             }
         })
 
+        if (typeof self.configuration.aws.scanEnabled === 'undefined') {
+            self.configuration.aws.scanEnabled = true
+        }
+
         self.logger = winston.createLogger({
             level: 'info',
             silent: !!options.silent,
@@ -896,7 +900,7 @@ module.exports = class MailDispatcher {
                         FunctionName: self.configuration.resourceName,
                         Handler: 'index.handler',
                         Runtime: 'nodejs8.10',
-                        MemorySize: 128,
+                        MemorySize: 512,
                         Role: self.configuration.aws.functionRoleArn,
                         Timeout: 30
                     }
@@ -1023,7 +1027,7 @@ module.exports = class MailDispatcher {
                         var rule = {
                             Name: self.configuration.resourceName,
                             Enabled: true,
-                            ScanEnabled: true,
+                            ScanEnabled: self.configuration.aws.scanEnabled,
                             Recipients: self.configuration.domains.map((item) => item.domain),
                             Actions: [
                                 {
