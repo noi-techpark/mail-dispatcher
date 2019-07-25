@@ -7,50 +7,55 @@ const fs = require('fs')
 const MailDispatcher = require('./src/mail-dispatcher')
 
 const bootstrap = (application, action) => {
-    try {
-        var configurationFile = application.configuration || __dirname + '/config.json'
-        var configuration = JSON.parse(fs.readFileSync(configurationFile))
-        var instance = new MailDispatcher(configuration, {
-            silent: !!application.silent
-        })
+  try {
+    var configurationFile = application.configuration || __dirname + '/config.json'
+    var configuration = JSON.parse(fs.readFileSync(configurationFile))
+    var instance = new MailDispatcher(configuration, {
+      silent: !!application.silent
+    })
 
-        action(instance)
-    } catch(err) {
-        console.error(err.message || err)
-        return process.exit(1)
-    }
+    action(instance)
+  } catch(err) {
+    console.error(err.message || err)
+    return process.exit(1)
+  }
 }
 
 var application = commander
-    .version('0.0.1')
+  .version('0.0.1')
 
 application
-    .option('-c, --configuration [path]', 'Path to configuration file')
-    .option('-s, --silent', 'Suppress all logging output')
+  .option('-c, --configuration [path]', 'Path to configuration file')
+  .option('-s, --silent', 'Suppress all logging output')
+  .option('-d, --debug', 'Include debugging and verbose output')
 
 application
-    .command('help')
-    .description('Prints the application\'s help screen')
-    .action(() => {
-        application.help()
+  .command('help')
+  .description('Prints the application\'s help screen')
+  .action(() => {
+    application.help()
+  })
+
+application
+  .command('clean')
+  .description('Clean automatically created resources')
+  .action(async () => {
+    bootstrap(application, (instance) => {
+      (async () => {
+        await instance.clean()
+      })()
     })
+  })
 
 application
-    .command('setup')
-    .description('Setup ')
-    .action(() => {
-        bootstrap(application, (instance) => {
-            instance.setup()
-        })
+  .command('deploy')
+  .description('Deploy latest version of configuration and mappings')
+  .action(async () => {
+    bootstrap(application, (instance) => {
+      (async () => {
+        await instance.deploy()
+      })()
     })
-
-application
-    .command('deploy')
-    .description('Deploy latest version of configuration and function')
-    .action(() => {
-        bootstrap(application, (instance) => {
-            instance.deploy()
-        })
-    })
+  })
 
 application.parse(process.argv)

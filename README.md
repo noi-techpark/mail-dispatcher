@@ -2,192 +2,84 @@
 
 ## Description
 
-The repository contains a mail dispatcher developed using Amazon AWS technologies ([SES](https://aws.amazon.com/ses/), [Lambda](https://aws.amazon.com/lambda/)) in order to map and forward mails sent to aliases or mailing lists.
+The repository contains a mail dispatcher based on [MailGun's](https://www.mailgun.com) routing functionality for domains managed on [AWS's Route53](https://aws.amazon.com/route53/) in order to map and forward mails sent to aliases or mailing lists.
 
 ## Requirements
 
 This application requires
 
-- Node.js (8.10 or greater)
 - Unix-like environment (Linux/Mac OS X)
 - Shell/Terminal
+- Node.js (8.10 or greater) and Yarn
 - AWS Account
+- MailGun Account
 
 ## Setup
 
 The following instructions will configure the environment and need to be performed only once, unless of course, the configuration/environment is changed significantly.
 
-1. Clone or download project repository
-1. Run `npm install` from the project's directory
-1. Create/configure required resources in AWS
+1. Clone or download the project repository
+1. Run `yarn` from the project's directory
+1. Create AWS account and configure required resources
+1. Create MailGun account and get API key
 1. Setup repository with mappings configuration
 1. Create configuration file `config.json`
-1. Run `setup` command
+1. Run `deploy` command
 
 ### Configure AWS user/credentials
 
-If you don't want to use your existing AWS account's credentials, you can create a separate user with it's own credentials. From the IAM's control panel you can create new users with the following options and settings
+If you don't want to use your existing AWS account, you can create a separate user with it's own credentials. From the IAM's control panel you can create new users with the following options and settings
 
 - **Username**: (of your choice)
 - **Programmatic access**: Checked/Enabled
 
 Make sure the following permissions/policies are configured
 
-- **AmazonSESFullAccess** (used to create/update verified domains and rules)
-- **AWSLambdaFullAccess** (used to create/update deployed function)
-
-If you use [Route53](https://aws.amazon.com/route53/) and would like to automatically configure the DNS records, add the following permission/policy
-
 - **AmazonRoute53FullAccess**
 
 After successful creation of the user, please take note of the created access/secret keys and indicate them in the configuration properties `aws.accessKey` and `aws.secretKey`.
 
-### Setup role for AWS Lambda
-
-The function which will process the incoming emails needs to be associated with an execution role, which defines all the permitted permissions/capabilities. The ARN of the role needs to be indicated in the configuration's property `aws.functionRoleArn`.
-
-The role can be based on the following role policy, but it is also possible to use an existing role that provide the same permissions.
-
-    {
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Effect": "Allow",
-                "Action": [
-                    "logs:CreateLogGroup",
-                    "logs:CreateLogStream",
-                    "logs:PutLogEvents"
-                ],
-                "Resource": "arn:aws:logs:*:*:*"
-            },
-            {
-                "Effect": "Allow",
-                "Action": "ses:SendEmail",
-                "Resource": "*"
-            },
-            {
-                "Effect": "Allow",
-                "Action": "ses:SendRawEmail",
-                "Resource": "*"
-            },
-            {
-                "Effect": "Allow",
-                "Action": [
-                    "s3:GetObject",
-                    "s3:PutObject",
-                    "s3:DeleteObject"
-                ],
-                "Resource": "arn:aws:s3:::{ S3-BUCKET-NAME }/*"
-            }
-        ]
-    }
-
-### Setup S3 bucket for SES
-
-You need to create a new one or indicate an existing S3 bucket, used to temporarily store the incoming emails while they are being processed and forwarded, in the configuration's property `aws.bucket`.
-
-The bucket has to be configured with the following policy ("Permissions" tab of the S3 bucket detail page), please make sure to replace the placeholders `{ S3-BUCKET-NAME }` and `{ AWS-ACCOUNT-ID }` with the actual values.
-    
-    {
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Sid": "AllowAccessToBucketFromSES",
-                "Effect": "Allow",
-                "Principal": {
-                    "Service": "ses.amazonaws.com"
-                },
-                "Action": "s3:PutObject",
-                "Resource": "arn:aws:s3:::{ S3-BUCKET-NAME }/*",
-                "Condition": {
-                    "StringEquals": {
-                        "aws:Referer": "{ AWS-ACCOUNT-ID }"
-                    }
-                }
-            }
-        ]
-    }
-
 ### Configuration
 
-The following snippet is an example configuration file. Please make sure to replace the placeholder `{ AWS-ACCESS-KEY }`, `{ AWS-SECRET-KEY }`, `{ S3-BUCKET-NAME }` and `{ FUNCTION-ROLE-ARN }`.
+The following snippet is an example configuration file. Please make sure to replace the placeholder `{AWS-ACCESS-KEY}`, `{AWS-SECRET-KEY}` and `{MAILGUN-API-KEY}`.
 
     {
-        "mappings": {
-            "type": "git",
-            "uri": "..."
+      "aws": {
+        "accessKey": "{AWS-ACCESS-KEY}",
+        "secretKey": "{AWS-SECRET-KEY}"
+      },
+      "mailgun": {
+        "apiKey": "{MAILGUN-API-KEY}",
+        "region": "eu"
+      },
+      "domains": [
+        {
+          "domain": "example.org",
+          "blockSpam": true
         },
-        "domains": [
-            {
-                "domain": "mails.example.com",
-                "defaultTo": [ "info@mails.example.com" ]
-            }
-        ],
-        "aws": {
-            "accessKey": "{ AWS-ACCESS-KEY }",
-            "secretKey": "{ AWS-SECRET-KEY }",
-            "region": "eu-west-1",
-            "bucket": "{ S3-BUCKET-NAME }",
-            "bucketPrefix": "",
-            "functionRoleArn": "{ FUNCTION-ROLE-ARN }"
-        }
+        {
+          "domain": "mails.example.com",
+          "zone": "example.com"
+        },
+        "anotherexample.com"
+      ],
+      
+      "mappings": {
+        "info@example.org": [ "...", "..." ],
+        "info@mails.example.com": [ "..." ]
+      },
+      
+      (or)
+      
+      "mappings": "/path/to/folder/with/mappings/**/*.json",
+      
+      (or)
+      
+      "mappings": [
+        "/path/to/folder/with/mappings/**/*.json",
+        "/another/path/to/folder/with/mappings/**/*.json"
+      ]
     }
-
-#### Configuration property: mappings
-
-    Required: true
-    Type: object with structure { "type", "uri" }
-
-The configuration of the mappings used when forwarding incoming emails. It is possible to use a Git repository, a local JSON file or a remote JSON url as source for the configuration of mappings.
-
-When using a Git repository for the mappings configuration, the repository will be cloned locally and all contained JSON files (regardless of their folder structure) will be parsed and included.
-
-In this case the `mappings` property will be configured as follows
-
-    {
-        "type": "git",
-        "uri": "https://github.com/idm-suedtirol/mail-dispatcher-example-config.git"
-    }
-
-Each `*.json` file in the cloned working copy of the repository must have the following structure
-
-    {
-        "from": "tech@mails.example.com",
-        "to": [
-            "john.doe@example.com",
-            "jane.doe@example.com"
-        ]
-    }
-
-You can also choose to use a local JSON file for holding the mappings configuration
-    
-    {
-        "type": "file",
-        "uri": "/etc/mail-dispatcher/mappings.json"
-    }
-
-or a local JSON file, like follows
-
-    {
-        "type": "http",
-        "uri": "https://etc.example.com/mail-dispatcher/mappings.json"
-    }
-
-#### Configuration property: defaultTo
-
-    Required: false
-    Type: string (email)
-
-Set the default email address of domains, used when there's no matching rule/mapping.
-
-This value will only be applied to domains without an explicit `defaultTo` setting.
-
-#### Configuration property: domains
-
-    Required: true
-    Type: array (objects with structure { "domain", "defaultTo" })
-
-The domains used for the forwarding, each associated with a default recipient. These domains will be queued for verification during the `setup` command, if not yet configured.
 
 #### Configuration properties: aws.accessKey, aws.secretKey
 
@@ -196,187 +88,41 @@ The domains used for the forwarding, each associated with a default recipient. T
 
 These properties represent the credentials of a valid AWS account.
 
-#### Configuration property: aws.region
+#### Configuration property: domains
 
     Required: true
-    Type: string (AWS region)
+    Type: array (objects with structure { "domain", "zone", "blockSpam" } or strings)
 
-These properties represent a valid AWS region in which all resources will be deployed and which should contain all referenced objects.
+The domains enabled for forwarding, if only a string is supplied then the default options for the domain are used. If you use a subdomain, then you can define the hosted zone used on Route53 - otherwise the given domain name will be used.
 
-#### Configuration property: aws.bucket
+By default, the spam will not be blocking but only "tagged" by MailGun's incoming email servers. Specifying `"blockSpam": true` will make sure spam emails won't be forwarded at all.
 
-    Required: true
-    Type: string (S3 bucket name)
-
-This property represents the name of the S3 bucket that has been setup and configured.
-
-#### Configuration property: aws.bucketPrefix
-
-    Required: false
-    Type: string (path prefix with trailing slash)
-
-This property is used to store the emails in the configured S3 bucket using a prefix ("subfolder"). If not specified or empty, the email will be stored temporarily in the root path of the bucket.
-
-#### Configuration property: aws.dnsConfigurationEnabled
-
-    Required: false
-    Type: boolean
-    Default: false
-
-This property determines whether to automatically create all the required DNS records using [Route53](https://aws.amazon.com/route53/).
-
-#### Configuration property: aws.functionRoleArn
+#### Configuration property: mappings
 
     Required: true
-    Type: string (AWS ARN)
+    Type: mappings object, path string with wildcards, array of path strings with wildcards
 
-This property represents the ARN of a AWS role that will be associated to the deployed function.
+The configuration of the mappings used when forwarding incoming emails. It is possible to directly specify the emails and their mapped recipients as a JSON object and/or use one or more path locations that contain JSON files, that can be also organised using nested subfolders.
 
-#### Configuration property: aws.bouncesTopic
-
-    Required: false
-    Type: string (AWS ARN)
-
-This property represents the ARN of the SNS topic that will be triggered/notified in case of bounced emails.
-
-#### Configuration property: aws.complaintsTopic
-
-    Required: false
-    Type: string (AWS ARN)
-
-This property represents the ARN of the SNS topic that will be triggered/notified in case of complaints.
-
-#### Configuration property: aws.deliveriesTopic
-
-    Required: false
-    Type: string (AWS ARN)
-
-This property represents the ARN of the SNS topic that will be triggered/notified when emails are delivered.
-
-#### Configuration property: aws.scanEnabled
-
-    Required: false
-    Type: boolean
-    Default: true
-
-This property determines whether to enable the spam/virus scanning for incoming emails.
-
-#### Configuration property: aws.spfEnabled
-
-    Required: false
-    Type: boolean
-    Default: false
-
-This property determines whether to configure the support for the Sender Policy Framework (SPF).
-
-#### Configuration property: aws.dkimEnabled
-
-    Required: false
-    Type: boolean
-    Default: false
-
-This property determines whether to configure and send emails signed with a DKIM cryptographic key.
-
-### Mappings
+When choosing to organise the mappings using JSON files, it is obviously possible to use folders based on Git repositories.
 
 Regardless of their location, the mappings file(s) have to be structured as in the following example
 
-    [
-        {
-            "from": "all@mails.example.com",
-            "to": [
-                "administration@example.com",
-                "john.doe@example.com",
-                "jane.doe@example.com",
-                "support@example.com"
-            ]
-        },
-        {
-            "from": "tech@mails.example.com",
-            "to": [
-                "john.doe@example.com",
-                "jane.doe@example.com"
-            ]
-        },
-        {
-            "from": [
-                "administration@mails.example.com",
-                "board@mails.example.com"
-            ],
-            "to": "administration@example.com"
-        }
-    ]
+    {
+      "info@example.org": [ "...", "..." ],
+      "info@mails.example.com": [ "..." ],
+      "ask@anotherexample.com": "..."
+    }
 
-If you specify/map the same address multiple times, then the resulting recipients will be merged together.
-
-#### Mappings property: from
-
-    Required: true
-    Type: single or array of
-              string (email), or
-              object (with structure {
-                  "type" = "email",
-                  "address" (string, email)
-              }), or
-              object (with structure {
-                  "type" = "mailman",
-                  "domain" (string),
-                  "list" (string)
-              })
-
-This property determines the email(s) on which to apply the mapped recipients.
-
-#### Mappings property: to
-
-    Required: true
-    Type: single or array of
-              string (email), or
-              object (with structure {
-                  "type" = "email",
-                  "address" (string, email)
-              }), or
-              object (with structure {
-                  "type" = "command",
-                  "host" (string),
-                  "port" (int),
-                  "user" (string),
-                  "password" (string),
-                  "key" (string, private key),
-                  "command" (string)
-              })
-
-This property determines the recipients which will receive or destinations which will process the incoming emails.
-
-If you decide to forward the emails to commands/scripts (via SSH), then you can use the following placeholders in the command's definition
-
-* **MESSAGE_ID** (unique email/message id)
-* **FROM** (the matched sender's address)
-* **DOMAIN** (the sender's address domain)
-
-If you use `from` elements of type "mailman", then the additional placeholder values are available
-
-* **MAILMAN_ACTION** (the associated Mailman action, e.g. "post", "join", ...)
-* **MAILMAN_LIST** (the name/slug of the mailing list)
-
-### Setup SPF
-
-Although not strictly necessary, it is advised to setup the Sender Policy Framework (SPF) for the associated domains so that the recipient's email server can verify and validate the incoming emails. [This page](https://docs.aws.amazon.com/ses/latest/DeveloperGuide/spf.html) describes how to setup the necessary DNS TXT records for authenticating AWS SES's servers to send emails for your domains.
-
-### Setup DKIM
-
-If you want to send emails signed with a DKIM cryptographic key, then you have to enable the configuration property `aws.dkimEnabled`.
-
-Running the `setup` command will output all DNS settings necessary for the DKIM signing to work correctly.
-
-If the DKIM settings have been correctly detected and verified by AWS SES, then this feature will be enabled only during the `deploy` phase and won't be enabled automatically.
+If you specify/map the same address multiple times (in different files), then the resulting recipients will be merged together.
 
 ## Usage
 
 The `mail-dispatcher` executable provides multiple sub-commands, namely
 
 * help
-* setup
 * deploy
+* clean
 
 The following options are available for all sub-commands
 
@@ -389,33 +135,20 @@ If no external configuration file is specified using `-c` or `--configuration`, 
 
 Print all the application's sub-commands and available options.
 
-### mail-dispatcher setup
-
-Setup all configured domains and start verification process for pending items. This command will output all required data for the DNS configuration for the specified domains.
-
-A typical output of this command looks as follows
-
-    (1) Domain: mails.example.com
-    (2)   > Status: Pending
-    (3)   > MX Record: inbound-smtp.eu-west-1.amazonaws.com
-    (4)   > Verification Domain: _amazonses.mails.example.com
-    (5)   > Verification Value (TXT): 6sGk2GAyieeDhOdbGGNgifYeJo2PBDE4ZuHafLoKO/c=
-    (6)   > DKIM: Disabled
-
-If you aren't using [Route53](https://aws.amazon.com/route53/) or you haven't configured the `aws.dnsConfigurationEnabled` property, you will have to setup the required DNS entries manually.
-
-In order to setup the domain you need to first configure the MX record on the domain (1) with value (3). Then you need to setup a TXT record on the verification domain (4) with value (5).
-
-If you have enabled the usage of DKIM signed emails, (6) and subsequent lines will contain all the DNS related setup necessary for correctly signing the outgoing emails.
-
-This command can be executed consecutively without consequences.
-
 ### mail-dispatcher deploy
 
-Fetch the mappings configuration and deploy the function to the AWS infrastructure. When running this command all relevant settings will be configured and updated so that the incoming emails will be processed correctly by the deployed function.
+Deploy the currently configured mappings to AWS and MailGun infrastructures. When running this command all relevant settings will be configured and updated so that the incoming emails will be processed correctly by MailGun's routing functionality.
 
-The function will be uploaded with a snapshot of the mappings configuration, so any changes will need to be re-deployed using this command.
+When hosted zones are created from scratch on Route53 and the nameserver configuration is not automatically managed and updated, the nameserver hostnames are printed out on the console.
 
-## Credits
+### mail-dispatcher clean
 
-Based on the work of @arithmetric from: https://github.com/arithmetric/aws-lambda-ses-forwarder
+Clean all related resources on AWS (DNS records) and MailGun (domains, routes). Eventually created hosted zones on Route53 are not removed/deleted.
+
+## Authors
+
+* Daniel Rampanelli [hello@danielrampanelli.com](mailto:hello@danielrampanelli.com)
+
+## License
+
+`TODO`
