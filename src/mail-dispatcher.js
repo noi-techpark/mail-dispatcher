@@ -7,1100 +7,643 @@ const globby = require('globby')
 const request = require('request')
 const retry = require('retry')
 const tmp = require('tmp')
+const utils = require('./utils')
 const winston = require('winston')
 const _ = require('underscore')
 
 module.exports = class MailDispatcher {
 
-    constructor(config, options) {
-        const self = this
+  constructor(config, options) {
+    const self = this
 
-        self.configuration = config
+    self.configuration = config
 
-        if (!self.configuration.resourceName) {
-            self.configuration.resourceName = 'mail-dispatcher'
+    if (!!self.configuration.mappings) {
+      let entries = []
+
+      if (_.isString(self.configuration.mappings) || _.isArray(self.configuration.mappings)) {
+        let paths = []
+
+        if (_.isString(self.configuration.mappings)) {
+          paths.push(self.configuration.mappings)
         }
 
-        if (!!self.configuration.defaultTo) {
-            if (!_.isArray(self.configuration.defaultTo)) {
-                self.configuration.defaultTo = [ self.configuration.defaultTo ]
-            }
-
-            self.configuration.domains = self.configuration.domains.map((entry) => {
-                if (!!entry.defaultTo) {
-                    if (!_.isArray(entry.defaultTo)) {
-                        return _.extend(entry, {
-                            defaultTo: [ entry.defaultTo ]
-                        })
-                    }
-                } else {
-                    return _.extend(entry, {
-                        defaultTo: self.configuration.defaultTo
-                    })
-                }
-
-                return entry
-            })
+        if (_.isArray(self.configuration.mappings)) {
+          paths = paths.concat(self.configuration.mappings)
         }
 
-        // TODO validate configuration
+        let matches = globby.sync(paths)
 
-        AWS.config.update({
-            region: self.configuration.aws.region,
-            credentials: {
-                accessKeyId: self.configuration.aws.accessKey,
-                secretAccessKey: self.configuration.aws.secretKey,
-                region: self.configuration.aws.region
-            }
+        matches.forEach(path => {
+          if (path.endsWith('.json')) {
+              let entry = JSON.parse(fs.readFileSync(path))
+
+              if (_.isObject(entry)&& !_.isArray(entry)) {
+                entries.push(entry)
+              }
+          }
         })
+      }
 
-        if (typeof self.configuration.aws.scanEnabled === 'undefined') {
-            self.configuration.aws.scanEnabled = true
+      if (_.isObject(self.configuration.mappings) && !_.isArray(self.configuration.mappings)) {
+        entries.push(self.configuration.mappings)
+      }
+
+      self.configuration.mappings = {}
+
+      for (var entry in entries) {
+        let mappings = entries[entry]
+
+        for (var email in mappings) {
+          if (!_.has(self.configuration.mappings, email)) {
+            self.configuration.mappings[email] = []
+          }
+
+          if (_.isString(mappings[email])) {
+            self.configuration.mappings[email].push(mappings[email])
+          }
+
+          if (_.isArray(mappings[email])) {
+            self.configuration.mappings[email] = _.unique(self.configuration.mappings[email].concat(mappings[email]))
+          }
+        }
+      }
+    } else {
+      self.configuration.mappings = {}
+    }
+
+    if (!!self.configuration.domains) {
+      self.configuration.domains = self.configuration.domains.map((entry, key) => {
+        let defaultConfiguration = {
+          'zone': null,
+          'setupDns': true,
+          'additionalSenders': [],
+          'blockSpam': false
         }
 
-        self.logger = winston.createLogger({
-            level: 'info',
-            silent: !!options.silent,
-            transports: [ new winston.transports.Console({
-                format: winston.format.combine(
-                    winston.format.colorize(),
-                    winston.format.splat(),
-                    winston.format.simple()
-                )
-            }) ]
+        if (typeof entry === 'string') {
+          return _.extend(defaultConfiguration, {
+            domain: entry
+          })
+        }
+
+        if (typeof entry === 'object') {
+          if (typeof entry.additionalSenders === 'string') {
+            entry.additionalSenders = [ entry.additionalSenders ]
+          }
+
+          return _.extend(defaultConfiguration, entry)
+        }
+
+        return null
+      }).filter((entry) => !!entry)
+    } else {
+      self.configuration.domains = []
+    }
+
+    AWS.config.update({
+      credentials: {
+        accessKeyId: self.configuration.aws.accessKey,
+        secretAccessKey: self.configuration.aws.secretKey
+      }
+    })
+
+    self.route53 = new AWS.Route53()
+
+    self.mailgun = require('mailgun-js')({
+      apiKey: self.configuration.mailgun.apiKey,
+      host: (!!self.configuration.mailgun.region && self.configuration.mailgun.region === 'eu' ? 'api.eu.mailgun.net' : 'api.mailgun.net')
+    })
+
+    self.logger = winston.createLogger({
+      level: 'info',
+      silent: !!options.silent,
+      transports: [ new winston.transports.Console({
+        format: winston.format.combine(
+          winston.format.colorize(),
+          winston.format.splat(),
+          winston.format.simple()
+        )
+      }) ]
+    })
+  }
+
+  call(object, fn) {
+    const args = Array.from(arguments)
+    const params = args.slice(2, args.length - 1)
+    const callback = args[args.length - 1]
+
+    var operation = retry.operation()
+
+    operation.attempt(() => {
+      object[fn].apply(object, params.concat([
+        (err, data) => {
+          if (!!err && _.contains(['TooManyRequestsException', 'Throttling'], err.code) && operation.retry(err)) {
+              return
+          }
+
+          callback(err, data)
+        }
+      ]))
+    })
+  }
+
+  hashRoute(route) {
+    return [].concat([ route.expression ], route.actions || route.action).join(':')
+  }
+
+  chopString(str, size) {
+    if (str === null) return []
+    str = String(str)
+    size = ~~size
+    return size > 0 ? str.match(new RegExp('.{1,' + size + '}', 'g')) : [str]
+  }
+
+  async clean() {
+    const self = this
+
+    self.logger.log('info', 'Cleaning up...')
+
+    self.logger.log('info', 'Removing related records...')
+
+    let hostedZonesResult = await self.route53.listHostedZones({
+      MaxItems: '1000'
+    }).promise()
+
+    for (var i in self.configuration.domains) {
+      let domainToDeploy = self.configuration.domains[i]
+      let domainName = domainToDeploy.domain
+
+      let hostedZones = hostedZonesResult.HostedZones.filter((zone) => (domainToDeploy.zone || domainName).endsWith(zone.Name.slice(0, -1)))
+
+      if (hostedZones.length > 0) {
+        let hostedZone = hostedZones[0]
+
+        let recordSetsResult = await self.route53.listResourceRecordSets({
+          HostedZoneId: hostedZone.Id
+        }).promise()
+
+        let recordSets = recordSetsResult.ResourceRecordSets
+
+        let changes = recordSets.filter((recordSet) => {
+          if (recordSet.Type === 'MX') {
+            return true
+          }
+
+          if (recordSet.Type === 'TXT' && recordSet.Name.includes('_domainkey.' + domainName)) {
+            return true
+          }
+
+          if (recordSet.Type === 'TXT' && recordSet.ResourceRecords.filter((record) => record.Value.includes('v=spf1')).length > 0) {
+            return true
+          }
+
+          return false
+        }).map((record) => {
+          return {
+            Action: 'DELETE',
+            ResourceRecordSet: record
+          }
         })
+
+        if (changes.length > 0) {
+          let outcome = await self.route53.changeResourceRecordSets({
+            HostedZoneId: hostedZone.Id,
+            ChangeBatch: {
+              Changes: changes
+            }
+          }).promise()
+
+          await self.route53.waitFor('resourceRecordSetsChanged', {
+            Id: outcome.ChangeInfo.Id
+          }).promise()
+        }
+      }
     }
 
-    call(object, fn) {
-        const args = Array.from(arguments)
-        const params = args.slice(2, args.length - 1)
-        const callback = args[args.length - 1]
+    let domains = await self.mailgun.get('/domains')
 
-        var operation = retry.operation()
+    self.logger.log('info', 'Removing %d domains...', domains.items.length)
 
-        operation.attempt(() => {
-            object[fn].apply(object, params.concat([
-                (err, data) => {
-                    if (!!err && _.contains(['TooManyRequestsException', 'Throttling'], err.code) && operation.retry(err)) {
-                        return
-                    }
+    for (var i in domains.items) {
+      await self.mailgun.delete('/domains/' + domains.items[i].name)
+    }
 
-                    callback(err, data)
-                }
-            ]))
+    let routes = await self.mailgun.get('/routes')
+
+    self.logger.log('info', 'Removing %d routes...', routes.items.length)
+
+    for (var i in routes.items) {
+      await self.mailgun.delete('/routes/' + routes.items[i].id)
+    }
+
+    self.logger.log('info', 'Waiting for resources to be removed...')
+
+    do {
+      domains = await self.mailgun.get('/domains')
+      routes = await self.mailgun.get('/routes')
+
+      await utils.sleep(500)
+    } while (domains.items.length > 0)
+
+    self.logger.log('info', 'Cleanup completed.')
+  }
+
+  async deploy() {
+    const self = this
+
+    self.logger.log('info', 'Deploying configuration and mappings...')
+
+    let hostedZonesResult = await self.route53.listHostedZones({
+      MaxItems: '1000'
+    }).promise()
+
+    let existingDomains = await self.mailgun.get('/domains')
+    existingDomains = _.object(_.map(existingDomains.items, (item) => [ item.name, item ]))
+
+    self.logger.log('info', 'Configured domains: %s', _.pluck(self.configuration.domains, 'domain'))
+
+    let cleanupChanges = {}
+    let setupChanges = {}
+
+    for (var i in self.configuration.domains) {
+      let domainToDeploy = self.configuration.domains[i]
+      let domainName = domainToDeploy.domain
+
+      self.logger.log('info', 'Processing domain: %s', domainName)
+
+      let spamAction = !!domainToDeploy.blockSpam ? 'block' : 'tag'
+
+      let domainEntry = null
+
+      try {
+        domainEntry = await self.mailgun.get('/domains/' + domainName)
+
+        delete existingDomains[domainName]
+
+        if (spamAction !== domainEntry.domain.spam_action) {
+          await self.mailgun.delete('/domains/' + domainName)
+
+          var domainsToWatch = null
+
+          do {
+            domainsToWatch = await self.mailgun.get('/domains')
+            domainsToWatch = domainsToWatch.items.filter((item) => item.name === domainName)
+
+            await utils.sleep(500)
+          } while (domainsToWatch.length > 0)
+
+          domainEntry = false
+        }
+      } catch (err) {
+        // noop
+      }
+
+      if (!domainEntry) {
+        domainEntry = await self.mailgun.post('/domains', {
+          name: domainName,
+          spam_action: spamAction
         })
-    }
+      }
 
-    setup() {
-        const self = this
+      let receivingRecords = domainEntry.receiving_dns_records
 
-        const ses = new AWS.SES()
-        const route53 = new AWS.Route53()
+      let spfSenderToConfigure = null
 
-        async.waterfall([
+      let spfRecords = domainEntry.sending_dns_records.filter((record) => record.record_type === 'TXT' && record.value.includes('v=spf'))
+      if (!!spfRecords) {
+        let match = spfRecords[0].value.match(/v=spf[0-9]{1} include\:([^\s]+)/)
+        if (!!match) {
+          spfSenderToConfigure = match[1]
+        }
+      }
 
-            (callback) => {
-                self.call(ses, 'listIdentities', {
-                    IdentityType: 'Domain',
-                    MaxItems: 1000
-                }, (err, data) => {
-                    if (!!err) {
-                        self.logger.log('error', 'SES.listIdentities', err)
-                        return callback(err)
-                    }
+      let verificationRecordToConfigure = null
 
-                    return callback(null, data.Identities)
-                })
-            },
+      let verificationRecords = domainEntry.sending_dns_records.filter((record) => record.record_type === 'TXT' && record.value.includes('k=rsa'))
+      if (!!verificationRecords) {
+        verificationRecordToConfigure = verificationRecords[0]
+      }
 
-            (identities, callback) => {
-                self.call(ses, 'getIdentityVerificationAttributes', {
-                    Identities: identities
-                }, (err, data) => {
-                    if (!!err) {
-                        self.logger.log('error', 'SES.getIdentityVerificationAttributes', err)
-                        return callback(err)
-                    }
+      let hostedZoneName = domainToDeploy.zone || domainName
 
-                    return callback(null, data.VerificationAttributes)
-                })
-            },
+      let hostedZone = null
 
-            (domains, callback) => {
-                async.mapSeries(self.configuration.domains, (item, callback) => {
-                    if (!!domains[item.domain]) {
-                        return callback(null, {
-                            domain: item.domain,
-                            status: domains[item.domain].VerificationStatus.toUpperCase(),
-                            token: domains[item.domain].VerificationToken
-                        })
-                    } else {
-                        self.call(ses, 'verifyDomainIdentity', {
-                            Domain: item.domain
-                        }, (err, data) => {
-                            if (!!err) {
-                                self.logger.log('error', 'SES.verifyDomainIdentity', err)
-                                return callback(err)
-                            }
+      let hostedZones = hostedZonesResult.HostedZones.filter((zone) => hostedZoneName.endsWith(zone.Name.slice(0, -1)))
 
-                            return callback(null, {
-                                domain: item.domain,
-                                status: 'PENDING',
-                                token: data.VerificationToken
-                            })
-                        })
-                    }
-                }, (err, domains) => {
-                    if (!!err) {
-                        return callback(err)
-                    }
+      if (hostedZones.length === 0) {
+        let newHostedZoneResult = await self.route53.createHostedZone({
+          CallerReference: hostedZoneName + '-' + (new Date().getTime()),
+          Name: hostedZoneName,
+          HostedZoneConfig: {
+            PrivateZone: false
+          }
+        }).promise()
 
-                    return callback(null, domains)
-                })
-            },
+        hostedZone = newHostedZoneResult.HostedZone
 
-            (domains, callback) => {
-                var updates = []
+        let recordSetsResult = await self.route53.listResourceRecordSets({
+          HostedZoneId: hostedZone.Id
+        }).promise()
 
-                self.configuration.domains.forEach((item) => {
-                    _.each({
-                        bouncesTopic: 'Bounce',
-                        complaintsTopic: 'Complaint',
-                        deliveriesTopic: 'Delivery'
-                    }, (type, property) => {
-                        if (!!self.configuration.aws[property]) {
-                            updates.push({
-                                Identity: item.domain,
-                                NotificationType: type,
-                                SnsTopic: self.configuration.aws[property]
-                            })
-                        } else {
-                            updates.push({
-                                Identity: item.domain,
-                                NotificationType: type,
-                                SnsTopic: null
-                            })
-                        }
-                    })
-                });
+        let nameserverRecords = recordSetsResult.ResourceRecordSets.filter((recordSet) => recordSet.Type === 'NS')
 
-                async.mapSeries(updates, (update, callback) => {
-                    self.call(ses, 'setIdentityNotificationTopic', update, (err) => {
-                        if (!!err) {
-                            self.logger.log('error', 'SES.setIdentityNotificationTopic', err)
-                            return callback(err)
-                        }
+        self.logger.log('info', 'Configured hosted zone for "%s": %s', hostedZoneName, _.pluck(_.flatten(nameserverRecords.map((recordSet) => recordSet.ResourceRecords)), 'Value').join(', '))
+      } else {
+        hostedZone = hostedZones[0]
+      }
 
-                        return callback(null)
-                    })
-                }, (err) => {
-                    if (!!err) {
-                        return callback(err)
-                    }
+      let recordSetsResult = await self.route53.listResourceRecordSets({
+        HostedZoneId: hostedZone.Id
+      }).promise()
 
-                    return callback(null, domains)
-                })
-            },
+      let recordSets = recordSetsResult.ResourceRecordSets
 
-            (domains, callback) => {
-                if (_.isBoolean(self.configuration.aws.dkimEnabled)) {
-                    if (self.configuration.aws.dkimEnabled) {
-                        async.mapSeries(domains, (item, callback) => {
-                            async.waterfall([
+      let domainSpecificRecordSets = recordSets.filter((recordSet) => recordSet.Name.slice(0, -1) === domainName)
+      let existingMxRecords = domainSpecificRecordSets.filter((recordSet) => recordSet.Type === 'MX')
+      let existingSpfRecords = domainSpecificRecordSets.filter((recordSet) => recordSet.Type === 'TXT' && recordSet.ResourceRecords.filter((record) => record.Value.includes('v=spf1')).length > 0)
+      let existingVerificationRecords = recordSets.filter((recordSet) => recordSet.Type === 'TXT' && recordSet.Name.includes('_domainkey.' + domainName))
 
-                                (callback) => {
-                                    setTimeout(() => {
-                                        self.call(ses, 'verifyDomainDkim', {
-                                            Domain: item.domain
-                                        }, (err) => {
-                                            if (!!err) {
-                                                self.logger.log('error', 'SES.verifyDomainDkim', err)
-                                                return callback(err)
-                                            }
+      let domainSpecificCleanupChanges = []
+      let domainSpecificSetupChanges = []
 
-                                            callback(null)
-                                        })
-                                    }, 1000)
-                                },
-
-                                (callback) => {
-                                    self.call(ses, 'getIdentityDkimAttributes', {
-                                        Identities: [ item.domain ]
-                                    }, (err, data) => {
-                                        if (!!err) {
-                                            self.logger.log('error', 'SES.getIdentityDkimAttributes', err)
-                                            return callback(err)
-                                        }
-
-                                        var dkim = {
-                                            enabled: true,
-                                            verified: false,
-                                            records: {}
-                                        }
-
-                                        var attributes = data.DkimAttributes[item.domain]
-
-                                        dkim.verified = attributes.DkimVerificationStatus === 'Success'
-
-                                        _.each(attributes.DkimTokens, (token) => {
-                                            dkim.records[token + '._domainkey.' + item.domain] = token + '.dkim.amazonses.com'
-                                        })
-
-                                        return callback(null, _.extend(_.clone(item), {
-                                            dkim: dkim
-                                        }))
-                                    })
-                                }
-
-                            ], (err, domain) => {
-                                if (!!err) {
-                                    return callback(err)
-                                }
-
-                                return callback(null, domain)
-                            })
-                        }, (err, domains) => {
-                            if (!!err) {
-                                return callback(err)
-                            }
-
-                            return callback(null, domains)
-                        })
-                    } else {
-                        return callback(null, domains)
-                    }
-                } else {
-                    return callback(null, domains)
-                }
-            },
-
-            (domains, callback) => {
-                if (!!self.configuration.aws.dnsConfigurationEnabled) {
-                    self.call(route53, 'listHostedZones', {
-                        MaxItems: '1000'
-                    }, (err, data) => {
-                        if (!!err) {
-                            self.logger.log('error', 'Route53.listHostedZones', err)
-                            return callback(err)
-                        }
-
-                        async.waterfall([
-
-                            (callback) => {
-                                async.map(domains, (item, callback) => {
-                                    item.warnings = []
-
-                                    var zones = data.HostedZones.filter((zone) => item.domain.endsWith(zone.Name.slice(0, -1)))
-
-                                    if (zones.length > 0) {
-                                        var zone = zones[0]
-
-                                        self.call(route53, 'listResourceRecordSets', {
-                                            HostedZoneId: zone.Id
-                                        }, (err, data) => {
-                                            if (!!err) {
-                                                self.logger.log('error', 'Route53.listResourceRecordSets', err)
-                                                return callback(err)
-                                            }
-
-                                            var records = []
-
-                                            _.each(data.ResourceRecordSets, (set) => {
-                                                _.each(set.ResourceRecords, (record) => {
-                                                    records.push({
-                                                        name: set.Name.slice(0, -1),
-                                                        type: set.Type,
-                                                        value: record.Value
-                                                    })
-                                                })
-                                            })
-
-                                            var pending = []
-
-                                            var verificationDomain = '_amazonses.' + item.domain
-                                            var verificationValue = '"' + item.token + '"'
-
-                                            if (records.filter((dnsRecord) => {
-                                                return dnsRecord.type === 'TXT' && dnsRecord.name === verificationDomain && dnsRecord.value === verificationValue
-                                            }).length === 0) {
-                                                pending.push({
-                                                    zone: zone,
-                                                    type: 'TXT',
-                                                    domain: verificationDomain,
-                                                    value: verificationValue
-                                                })
-                                            }
-
-                                            var mxDomain = item.domain
-                                            var mxHost = 'inbound-smtp.' + self.configuration.aws.region + '.amazonaws.com'
-                                            var mxValue = '10 ' + mxHost
-
-                                            if (records.filter((dnsRecord) => {
-                                                return dnsRecord.type === 'MX' && dnsRecord.name === mxDomain && dnsRecord.value.includes(mxHost)
-                                            }).length === 0) {
-                                                if (records.filter((dnsRecord) => {
-                                                    return dnsRecord.type === 'MX' && dnsRecord.name === mxDomain
-                                                }).length === 0) {
-                                                    pending.push({
-                                                        zone: zone,
-                                                        type: 'MX',
-                                                        domain: mxDomain,
-                                                        value: mxValue
-                                                    })
-                                                } else {
-                                                    item.warnings.push('Found existing MX record')
-                                                }
-                                            }
-
-                                            if (!!self.configuration.aws.spfEnabled) {
-                                                var spfDomain = item.domain
-                                                var spfValue = '"v=spf1 include:' + self.configuration.aws.region + '.amazonses.com ~all"'
-
-                                                if (records.filter((dnsRecord) => {
-                                                    return dnsRecord.type === 'TXT' && dnsRecord.name === spfDomain && dnsRecord.value === spfValue
-                                                }).length === 0) {
-                                                    if (records.filter((dnsRecord) => {
-                                                        return dnsRecord.type === 'TXT' && dnsRecord.name === spfDomain && dnsRecord.value.includes('v=spf1')
-                                                    }).length === 0) {
-                                                        pending.push({
-                                                            zone: zone,
-                                                            type: 'TXT',
-                                                            domain: spfDomain,
-                                                            value: spfValue
-                                                        })
-                                                    } else {
-                                                        item.warnings.push('Found existing SPF/TXT record')
-                                                    }
-                                                }
-                                            }
-
-                                            if (!!self.configuration.aws.dkimEnabled) {
-                                                _.each(item.dkim.records, (value, domain) => {
-                                                    if (records.filter((dnsRecord) => {
-                                                        return dnsRecord.type === 'CNAME' && dnsRecord.name === domain && dnsRecord.value === value
-                                                    }).length === 0) {
-                                                        pending.push({
-                                                            zone: zone,
-                                                            type: 'CNAME',
-                                                            domain: domain,
-                                                            value: value
-                                                        })
-                                                    }
-                                                })
-                                            }
-
-                                            if (!!self.configuration.aws.spfEnabled || !!self.configuration.aws.dkimEnabled) {
-                                                var dmarcDomain = '_dmarc.' + item.domain
-                                                var dmarcValue = '"v=DMARC1;p=quarantine;pct=100"'
-
-                                                if (records.filter((dnsRecord) => {
-                                                    return dnsRecord.type === 'TXT' && dnsRecord.name === dmarcDomain && dnsRecord.value === dmarcValue
-                                                }).length === 0) {
-                                                    pending.push({
-                                                        zone: zone,
-                                                        type: 'TXT',
-                                                        domain: dmarcDomain,
-                                                        value: dmarcValue
-                                                    })
-                                                }
-                                            }
-
-                                            return callback(null, pending)
-                                        })
-                                    } else {
-                                        return callback(null, [])
-                                    }
-                                }, (err, pending) => {
-                                    if (!!err) {
-                                        return callback(err)
-                                    }
-
-                                    callback(null, _.flatten(pending, true))
-                                })
-                            },
-
-                            (pending, callback) => {
-                                async.mapSeries(pending, (record, callback) => {
-                                    self.call(route53, 'changeResourceRecordSets', {
-                                        HostedZoneId: record.zone.Id,
-                                        ChangeBatch: {
-                                            Changes: [
-                                                {
-                                                    Action: 'CREATE',
-                                                    ResourceRecordSet: {
-                                                        Name: record.domain,
-                                                        Type: record.type,
-                                                        TTL: 300,
-                                                        ResourceRecords: [
-                                                            {
-                                                                Value: record.value
-                                                            }
-                                                        ]
-                                                    }
-                                                }
-                                            ]
-                                        }
-                                    }, (err) => {
-                                        if (!!err) {
-                                            self.logger.log('error', 'Route53.changeResourceRecordSets', err)
-                                            return callback(err)
-                                        }
-
-                                        return callback(null)
-                                    })
-                                }, (err) => {
-                                    if (!!err) {
-                                        return callback(err)
-                                    }
-
-                                    return callback(null)
-                                })
-                            }
-
-                        ], (err) => {
-                            if (!!err) {
-                                return callback(err)
-                            }
-
-                            return callback(null, domains)
-                        })
-
-                    })
-                } else {
-                    return callback(null, domains)
-                }
-            }
-
-        ], (err, domains) => {
-            if (!!err) {
-                console.error(err.message || err)
-                return process.exit(1)
-            }
-
-            self.logger.log('info', 'Setup completed.')
-
-            domains.forEach((item) => {
-                console.log(colors.cyan('Domain: %s'), item.domain)
-                console.log('  > Status: %s', item.status === 'SUCCESS' ? colors.green('Verified') : colors.red('Pending'))
-                console.log('  > MX Record: inbound-smtp.%s.amazonaws.com', self.configuration.aws.region)
-                console.log('  > Verification Domain: _amazonses.%s', item.domain)
-                console.log('  > Verification Value (TXT): %s', item.token)
-
-                if (item.dkim && item.dkim.enabled) {
-                    console.log('  > DKIM: %s', item.dkim.verified ? colors.green('Verified') : colors.red('Pending'))
-
-                    _.each(item.dkim.records, (value, record) => {
-                        console.log('      > Name: %s', record)
-                        console.log('        Type: CNAME')
-                        console.log('        Value: %s', value)
-                    })
-                } else {
-                    console.log('  > DKIM: Disabled')
-                }
-
-                if (!!item.warnings && item.warnings.length > 0) {
-                    console.log('  > Warnings:')
-
-                    _.each(item.warnings, (warning) => {
-                        console.log('      > %s', colors.yellow(warning))
-                    })
-                }
-            })
+      if (!!receivingRecords && receivingRecords.length > 0) {
+        let mxValues = receivingRecords.map((record) => {
+          return record.priority + ' ' + record.value
         })
+
+        let existingMxValues = _.flatten(existingMxRecords.map((record) => record.ResourceRecords)).map((entry) => entry.Value)
+
+        if (existingMxRecords.length === 0 || _.difference(mxValues, existingMxValues).length > 0) {
+          domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingMxRecords.map((record) => {
+            return {
+              Action: 'DELETE',
+              ResourceRecordSet: record
+            }
+          }))
+
+          domainSpecificSetupChanges.push({
+            Action: 'CREATE',
+            ResourceRecordSet: {
+              Name: domainName,
+              Type: 'MX',
+              TTL: 300,
+              ResourceRecords: mxValues.map((record) => {
+                return { Value: record }
+              })
+            }
+          })
+        }
+      } else {
+        domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingMxRecords.map((record) => {
+          return {
+            Action: 'DELETE',
+            ResourceRecordSet: record
+          }
+        }))
+      }
+
+      if (!!spfSenderToConfigure) {
+        let senders = [ 'include:' + spfSenderToConfigure ]
+
+        // TODO include additional/other senders
+
+        let spfValue = '"v=spf1 ' + senders.join(' ') + ' ~all"'
+
+        let existingSpfValue = null
+        if (existingSpfRecords.length === 1 && existingSpfRecords[0].ResourceRecords.length > 0) {
+          existingSpfValue = existingSpfRecords[0].ResourceRecords[0].Value
+        }
+
+        if (existingSpfRecords.length === 0 || spfValue !== existingSpfValue) {
+          domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingSpfRecords.map((record) => {
+            return {
+              Action: 'DELETE',
+              ResourceRecordSet: record
+            }
+          }))
+
+          domainSpecificSetupChanges.push({
+            Action: 'CREATE',
+            ResourceRecordSet: {
+              Name: domainName,
+              Type: 'TXT',
+              TTL: 300,
+              ResourceRecords: [
+                {
+                  Value: spfValue
+                }
+              ]
+            }
+          })
+        }
+      } else {
+        domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingSpfRecords.map((record) => {
+          return {
+            Action: 'DELETE',
+            ResourceRecordSet: record
+          }
+        }))
+      }
+
+      if (!!verificationRecordToConfigure) {
+        let existingVerificationValue = null
+        if (existingVerificationRecords.length === 1 && existingVerificationRecords[0].ResourceRecords.length > 0) {
+          let parts = existingVerificationRecords[0].ResourceRecords[0].Value.split('" "')
+          parts = parts.map((part) => part.replace('"', ''))
+
+          existingVerificationValue = parts.join('').replace('"', '')
+        }
+
+        if (existingVerificationRecords.length === 0 || verificationRecordToConfigure.value !== existingVerificationValue) {
+          let parts = self.chopString(verificationRecordToConfigure.value, 240)
+
+          domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingVerificationRecords.map((record) => {
+            return {
+              Action: 'DELETE',
+              ResourceRecordSet: record
+            }
+          }))
+
+          domainSpecificSetupChanges.push({
+            Action: 'CREATE',
+            ResourceRecordSet: {
+              Name: verificationRecordToConfigure.name,
+              Type: 'TXT',
+              TTL: 300,
+              ResourceRecords: parts.map((part) => {
+                return { Value: '"' + part + '"' }
+              })
+            }
+          })
+        }
+      } else {
+        domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingVerificationRecords.map((record) => {
+          return {
+            Action: 'DELETE',
+            ResourceRecordSet: record
+          }
+        }))
+      }
+
+      if (domainSpecificCleanupChanges.length > 0) {
+        if (!_.has(cleanupChanges, hostedZone.Id)) {
+          cleanupChanges[hostedZone.Id] = []
+        }
+
+        cleanupChanges[hostedZone.Id] = cleanupChanges[hostedZone.Id].concat(domainSpecificCleanupChanges)
+      }
+
+      if (domainSpecificSetupChanges.length > 0) {
+        if (!_.has(setupChanges, hostedZone.Id)) {
+          setupChanges[hostedZone.Id] = []
+        }
+
+        setupChanges[hostedZone.Id] = setupChanges[hostedZone.Id].concat(domainSpecificSetupChanges)
+      }
     }
 
-    canBeResolved(table, address) {
-        const self = this
+    self.logger.log('info', 'Applying changes to DNS records')
 
-        var queue = [ address ]
-        var processed = []
+    if (!_.isEmpty(cleanupChanges)) {
+      let count = 0
 
-        do {
-            var resolvedQueue = []
-            var processedAddresses = []
+      for (var zoneId in cleanupChanges) {
+        let outcome = await self.route53.changeResourceRecordSets({
+          HostedZoneId: zoneId,
+          ChangeBatch: {
+            Changes: cleanupChanges[zoneId]
+          }
+        }).promise()
 
-            queue.forEach((address) => {
-                if (!!table[address]) {
-                    table[address].forEach((to) => {
-                        processedAddresses.push(to)
+        await self.route53.waitFor('resourceRecordSetsChanged', {
+          Id: outcome.ChangeInfo.Id
+        }).promise()
 
-                        self.configuration.domains.forEach((item) => {
-                            if (to.includes('@' + item.domain)) {
-                                resolvedQueue.push(to)
-                            }
-                        })
-                    })
-                } else {
-                    self.configuration.domains.forEach((item) => {
-                        if (address.includes('@' + item.domain)) {
-                            item.defaultTo.forEach((to) => {
-                                processedAddresses.push(to)
-                                resolvedQueue.push(to)
-                            })
-                        }
-                    })
-                }
-            })
+        count += cleanupChanges[zoneId].length
+      }
 
-            queue = resolvedQueue
-
-            if (_.intersection(queue, processed).length > 0) {
-                return false
-            }
-
-            processed = _.unique(processed.concat(processedAddresses))
-        } while (queue.length > 0)
-
-        return true
+      self.logger.log('info', 'Cleaned up %d records', count)
     }
 
-    deploy() {
-        const self = this
-
-        const lambda = new AWS.Lambda()
-        const ses = new AWS.SES()
-
-        var mappingsDirectory = tmp.dirSync()
-        var packageDir = tmp.dirSync()
-        var packageFile = tmp.tmpNameSync({ postfix: '.zip' })
-
-        async.waterfall([
-
-            (callback) => {
-                self.logger.log('info', 'Checking that all configured domains are ready to use...')
-
-                async.waterfall([
-
-                    (callback) => {
-                        self.call(ses, 'listIdentities', {
-                            IdentityType: 'Domain',
-                            MaxItems: 1000
-                        }, (err, data) => {
-                            if (!!err) {
-                                self.logger.log('error', 'SES.listIdentities', err)
-                                return callback(err)
-                            }
-
-                            return callback(null, data.Identities)
-                        })
-                    },
-
-                    (identities, callback) => {
-                        self.call(ses, 'getIdentityVerificationAttributes', {
-                            Identities: identities
-                        }, (err, data) => {
-                            if (!!err) {
-                                self.logger.log('error', 'SES.getIdentityVerificationAttributes', err)
-                                return callback(err)
-                            }
-
-                            var unverifiedDomains = []
-
-                            self.configuration.domains.forEach((item) => {
-                                if (!data.VerificationAttributes[item.domain] || data.VerificationAttributes[item.domain].VerificationStatus !== 'Success') {
-                                    unverifiedDomains.push(item.domain)
-                                }
-                            })
-
-                            if (unverifiedDomains.length > 0) {
-                                self.logger.log('error', 'Trying to use unverified domains: [ %s ]', unverifiedDomains.join(', '))
-                                return callback(new Error('Some of the configured domains have not been verified, please check or run the setup again.'))
-                            } else {
-                                return callback(null)
-                            }
-                        })
-                    },
-
-                    (callback) => {
-                        self.call(ses, 'getIdentityDkimAttributes', {
-                            Identities: self.configuration.domains.map((item) => item.domain)
-                        }, (err, data) => {
-                            if (!!err) {
-                                self.logger.log('error', 'SES.getIdentityDkimAttributes', err)
-                                return callback(err)
-                            }
-
-                            var updates = []
-
-                            _.each(data.DkimAttributes, (attributes, domain) => {
-                                if (_.isBoolean(self.configuration.aws.dkimEnabled)) {
-                                    if (self.configuration.aws.dkimEnabled && !attributes.DkimEnabled) {
-                                        updates.push({
-                                            Identity: domain,
-                                            DkimEnabled: true
-                                        })
-                                    }
-
-                                    if (!self.configuration.aws.dkimEnabled && attributes.DkimEnabled) {
-                                        updates.push({
-                                            Identity: domain,
-                                            DkimEnabled: false
-                                        })
-                                    }
-                                }
-                            })
-
-                            if (!!updates) {
-                                async.mapSeries(updates, (update, callback) => {
-                                    self.call(ses, 'setIdentityDkimEnabled', update, (err, data) => {
-                                        if (!!err) {
-                                            return callback(err)
-                                        }
-
-                                        return callback(null)
-                                    })
-                                }, (err) => {
-                                    if (!!err) {
-                                        return callback(err)
-                                    }
-
-                                    return callback(null)
-                                })
-                            } else {
-                                return callback(null)
-                            }
-                        })
-                    }
-
-                ], (err) => {
-                    if (!!err) {
-                        return callback(err)
-                    }
-
-                    return callback(null)
-                })
-            },
-
-            (callback) => {
-                if (self.configuration.mappings.type === 'file') {
-                    self.logger.log('info', 'Fetching mappings configuration from file "%s"...', self.configuration.mappings.uri)
-
-                    if (!fs.existsSync(self.configuration.mappings.uri)) {
-                        return callback(new Error('Given file does not appear to be readable or exist.'))
-                    }
-
-                    var data = JSON.parse(fs.readFileSync(self.configuration.mappings.uri, 'utf8'))
-
-                    if (!data) {
-                        return callback(new Error('Invalid JSON string in file.'))
-                    }
-
-                    return callback(null, data)
-                }
-
-                if (self.configuration.mappings.type === 'http') {
-                    self.logger.log('info', 'Fetching mappings configuration from url "%s"...', self.configuration.mappings.uri)
-
-                    request({
-                        url: self.configuration.mappings.uri,
-                        json: true
-                    }, (err, response, data) => {
-                        if (!!err || response.statusCode !== 200) {
-                            return callback(err)
-                        }
-
-                        if (!data) {
-                            return callback(new Error('Invalid JSON string in response.'))
-                        }
-
-                        return callback(null, data)
-                    })
-                }
-
-                if (self.configuration.mappings.type === 'git') {
-                    self.logger.log('info', 'Fetching mappings configuration from repository "%s"...', self.configuration.mappings.uri)
-
-                    child_process.exec('git clone ' + self.configuration.mappings.uri + ' ' + mappingsDirectory.name, () => {
-                        globby([ mappingsDirectory.name + '/**/*.json' ]).then(paths => {
-                            var data = []
-
-                            paths.forEach(path => {
-                                if (path.endsWith('.json')) {
-                                    data.push(JSON.parse(fs.readFileSync(path)))
-                                }
-                            })
-
-                            return callback(null, data)
-                        })
-                    })
-                }
-
-                return callback(null, [])
-            },
-
-            (items, callback) => {
-                items = items.filter((item) => !!item.from && !!item.to)
-
-                items.forEach((item) => {
-                    if (!_.isArray(item.from)) {
-                        item.from = [ item.from ]
-                    }
-
-                    if (!_.isArray(item.to)) {
-                        item.to = [ item.to ]
-                    }
-                })
-
-                return callback(null, items)
-            },
-
-            (items, callback) => {
-                const self = this
-
-                self.logger.log('info', 'Checking whether the mapped addresses are acyclic...')
-
-                var table = {}
-                items.filter((item) => item.type === 'email').forEach((item) => {
-                    item.from.forEach((from) => {
-                        table[from] = item.to
-                    })
-                })
-
-                var invalid = []
-                var addresses = []
-
-                self.configuration.domains.filter((item) => !!item.defaultTo).map((item) => item.defaultTo).forEach((tos) => {
-                    addresses = addresses.concat(tos)
-                })
-
-                addresses = addresses.concat(items.map((item) => item.from))
-
-                addresses = _.unique(addresses)
-
-                addresses.forEach((address) => {
-                    if (!self.canBeResolved(table, address)) {
-                        invalid.push(address)
-                    }
-                })
-
-                if (invalid.length > 0) {
-                    return callback(new Error('Detected forwarding cycle for: [ ' + invalid.join(', ') + ' ]'))
-                }
-
-                return callback(null, items)
-            },
-
-            (items, callback) => {
-                var functionConfiguration = {
-                    region: self.configuration.aws.region,
-                    bucket: self.configuration.aws.bucket,
-                    bucketPrefix: self.configuration.aws.bucketPrefix,
-                    mappings: {
-                        '@default': {}
-                    }
-                }
-
-                // TODO add support for command/lmtp default destinations
-
-                self.configuration.domains.filter((item) => !!item.defaultTo).forEach((item) => {
-                    functionConfiguration.mappings['@default'][item.domain] = item.defaultTo.map((to) => {
-                        return {
-                            type: 'email',
-                            address: to
-                        }
-                    })
-                })
-
-                items.forEach((item) => {
-                    var triggers = {}
-
-                    item.from.forEach((from) => {
-                        if (_.isString(from)) {
-                            triggers[from] = {}
-                        }
-
-                        if (_.isObject(from) && !!from.type) {
-                            if (from.type === 'mailman') {
-                                var actions = {}
-                                actions[from.list] = 'post'
-                                actions[from.list + '-admin'] = 'admin'
-                                actions[from.list + '-bounces'] = 'bounces'
-                                actions[from.list + '-confirm'] = 'confirm'
-                                actions[from.list + '-join'] = 'join'
-                                actions[from.list + '-leave'] = 'leave'
-                                actions[from.list + '-owner'] = 'owner'
-                                actions[from.list + '-request'] = 'request'
-                                actions[from.list + '-subscribe'] = 'subscribe'
-                                actions[from.list + '-unsubscribe'] = 'unsubscribe'
-
-                                _.each(actions, (action, addressPart) => {
-                                    triggers[addressPart + '@' + from.domain] = {
-                                        'MAILMAN_ACTION': action,
-                                        'MAILMAN_LIST': from.list
-                                    }
-                                })
-                            }
-                        }
-                    })
-
-                    _.each(triggers, (context, from) => {
-                        if (!_.has(functionConfiguration.mappings, from)) {
-                            functionConfiguration.mappings[from] = []
-                        }
-                    })
-
-                    item.to.forEach((to) => {
-                        if (_.isString(to)) {
-                            _.each(triggers, (context, from) => {
-                                functionConfiguration.mappings[from].push({
-                                    type: 'email',
-                                    address: to
-                                })
-                            })
-                        }
-
-                        if (_.isObject(to) && !!to.type) {
-                            if (to.type === 'command') {
-                                _.each(triggers, (context, from) => {
-                                    var command = to.command
-
-                                    _.each(context, (value, key) => {
-                                        command = command.replace('{{' + key + '}}', value)
-                                    })
-
-                                    functionConfiguration.mappings[from].push(_.extend(_.clone(to), {
-                                        command: command
-                                    }))
-                                })
-                            }
-                        }
-                    })
-                })
-
-                return callback(null, functionConfiguration)
-            },
-
-            (functionConfiguration, callback) => {
-                self.logger.log('info', 'Creating function package...')
-
-                fs.copySync(__dirname + '/../node_modules', packageDir.name + '/node_modules')
-
-                fs.writeFileSync(packageDir.name + '/config.json', JSON.stringify(functionConfiguration))
-
-                fs.copySync(__dirname + '/mail-dispatcher-error.js', packageDir.name + '/error.js')
-                fs.copySync(__dirname + '/index.js', packageDir.name + '/index.js')
-
-                child_process.exec('zip -rq -X "' + packageFile + '" ./node_modules ./config.json ./error.js ./index.js', { cwd: packageDir.name }, () => {
-                    return callback(null, functionConfiguration)
-                })
-            },
-
-            (functionConfiguration, callback) => {
-                self.logger.log('info', 'Deploying function "%s"...', self.configuration.resourceName)
-
-                self.call(lambda, 'getFunction', {
-                    FunctionName: self.configuration.resourceName
-                }, (err, data) => {
-                    if (!!err && err.code !== 'ResourceNotFoundException') {
-                        self.logger.log('error', 'Lambda.getFunction', err)
-                        return callback(err)
-                    }
-
-                    var configuration = {
-                        FunctionName: self.configuration.resourceName,
-                        Handler: 'index.handler',
-                        Runtime: 'nodejs8.10',
-                        MemorySize: 512,
-                        Role: self.configuration.aws.functionRoleArn,
-                        Timeout: 30
-                    }
-
-                    const code = fs.readFileSync(packageFile).buffer
-
-                    if (!!data) {
-                        async.series([
-
-                            (callback) => {
-                                self.call(lambda, 'updateFunctionConfiguration', configuration, (err) => {
-                                    if (!!err) {
-                                        self.logger.log('error', 'Lambda.updateFunctionConfiguration', err)
-                                        return callback(err)
-                                    }
-
-                                    return callback(null)
-                                })
-                            },
-
-                            (callback) => {
-                                self.call(lambda, 'updateFunctionCode', {
-                                    FunctionName: self.configuration.resourceName,
-                                    Publish: true,
-                                    ZipFile: code
-                                }, (err) => {
-                                    if (!!err) {
-                                        self.logger.log('error', 'Lambda.updateFunctionCode', err)
-                                        return callback(err)
-                                    }
-
-                                    return callback(null)
-                                })
-                            }
-
-                        ], (err) => {
-                            if (!!err) {
-                                return callback(err)
-                            }
-
-                            return callback(null, functionConfiguration, data.Configuration.FunctionArn)
-                        })
-                    } else {
-                        self.call(lambda, 'createFunction', _.extend(_.clone(configuration), {
-                            Publish: true,
-                            Code: {
-                                ZipFile: code
-                            }
-                        }), (err, data) => {
-                            if (!!err) {
-                                self.logger.log('error', 'Lambda.createFunction', err)
-                                return callback(err)
-                            }
-
-                            return callback(null, functionConfiguration, data.FunctionArn)
-                        })
-                    }
-                })
-            },
-
-            (functionConfiguration, functionArn, callback) => {
-                self.logger.log('info', 'Ensuring the function can be invoked on incoming emails...')
-
-                self.call(lambda, 'addPermission', {
-                    FunctionName: self.configuration.resourceName,
-                    StatementId: 'GiveSESPermissionToInvokeFunction',
-                    Action: 'lambda:InvokeFunction',
-                    Principal: 'ses.amazonaws.com'
-                }, (err, data) => {
-                    if (!!err && err.code !== 'ResourceConflictException') {
-                        self.logger.log('error', 'Lambda.addPermission', err || data)
-                        return callback(err)
-                    }
-
-                    if (!!err && err.code === 'ResourceConflictException') {
-                        return callback(null, functionConfiguration, functionArn)
-                    }
-
-                    return callback(null, functionConfiguration, functionArn)
-                })
-            },
-
-            (functionConfiguration, functionArn, callback) => {
-                self.logger.log('info', 'Ensuring the rules for incoming emails are configured...')
-
-                async.waterfall([
-
-                    (callback) => {
-                        self.call(ses, 'describeActiveReceiptRuleSet', {}, (err, data) => {
-                            if (!!err) {
-                                self.logger.log('error', 'SES.describeActiveReceiptRuleSet', err)
-                                return callback(err)
-                            }
-
-                            if (!!data && !!data.Metadata && !!data.Metadata.Name) {
-                                callback(null, data.Metadata.Name, data.Rules || [])
-                            } else {
-                                var ruleSet = 'default-rule-set-' + Math.random().toString(36).substring(2, 8)
-
-                                self.call(ses, 'createReceiptRuleSet', {
-                                    RuleSetName: ruleSet
-                                }, (err, data) => {
-                                    if (!!err) {
-                                        self.logger.log('error', 'SES.createReceiptRuleSet', err)
-                                        return callback(err)
-                                    }
-
-                                    self.call(ses, 'setActiveReceiptRuleSet', {
-                                        RuleSetName: ruleSet
-                                    }, (err, data) => {
-                                        if (!!err) {
-                                            self.logger.log('error', 'SES.setActiveReceiptRuleSet', err)
-                                            return callback(err)
-                                        }
-
-                                        callback(null, ruleSet, [])
-                                    })
-                                })
-                            }
-                        })
-                    },
-
-                    (ruleSet, rules, callback) => {
-                        var rule = {
-                            Name: self.configuration.resourceName,
-                            Enabled: true,
-                            ScanEnabled: self.configuration.aws.scanEnabled,
-                            Recipients: self.configuration.domains.map((item) => item.domain),
-                            Actions: [
-                                {
-                                    S3Action: {
-                                        BucketName: self.configuration.aws.bucket,
-                                        ObjectKeyPrefix: self.configuration.aws.bucketPrefix
-                                    }
-                                },
-                                {
-                                    LambdaAction: {
-                                        FunctionArn: functionArn,
-                                        InvocationType: 'Event'
-                                    }
-                                }
-                            ]
-                        }
-
-                        var matches = rules.filter((rule) => rule.Name === self.configuration.resourceName)
-
-                        if (matches.length === 0) {
-                            self.call(ses, 'createReceiptRule', {
-                                RuleSetName: ruleSet,
-                                Rule: rule
-                            }, (err) => {
-                                if (!!err) {
-                                    self.logger.log('error', 'SES.createReceiptRule', err)
-                                    return callback(err)
-                                }
-
-                                return callback(null)
-                            })
-                        } else {
-                            self.call(ses, 'updateReceiptRule', {
-                                RuleSetName: ruleSet,
-                                Rule: rule
-                            }, (err) => {
-                                if (!!err) {
-                                    self.logger.log('error', 'SES.updateReceiptRule', err)
-                                    return callback(err)
-                                }
-
-                                return callback(null)
-                            })
-                        }
-                    }
-
-                ], (err) => {
-                    if (!!err) {
-                        return callback(err)
-                    }
-
-                    return callback(null, functionConfiguration, functionArn)
-                })
-            },
-
-            (functionConfiguration, functionArn, callback) => {
-                self.logger.log('info', 'Cleaning up...')
-
-                fs.removeSync(mappingsDirectory.name)
-                fs.removeSync(packageDir.name)
-                fs.removeSync(packageFile)
-
-                return callback(null, functionConfiguration, functionArn)
-            }
-
-        ], (err) => {
-            if (!!err) {
-                console.error(err.message || err)
-                return process.exit(1)
-            }
-
-            self.logger.log('info', 'Deployment completed.')
-        })
+    if (!_.isEmpty(setupChanges)) {
+      let count = 0
+
+      for (var zoneId in setupChanges) {
+        let outcome = await self.route53.changeResourceRecordSets({
+          HostedZoneId: zoneId,
+          ChangeBatch: {
+            Changes: setupChanges[zoneId]
+          }
+        }).promise()
+
+        await self.route53.waitFor('resourceRecordSetsChanged', {
+          Id: outcome.ChangeInfo.Id
+        }).promise()
+
+        count += setupChanges[zoneId].length
+      }
+
+      self.logger.log('info', 'Created %d records', count)
     }
+
+    if (!_.isEmpty(existingDomains)) {
+      for (var domainName in existingDomains) {
+        await self.mailgun.delete('/domains/' + domainName)
+      }
+
+      self.logger.log('info', 'Cleaned up left-over domains: %s', _.keys(existingDomains))
+    }
+
+    self.logger.log('info', 'Configuring mapping routes...')
+
+    let routes = await self.mailgun.get('/routes')
+
+    routes = _.object(routes.items.map((route) => {
+      return [ self.hashRoute(route), route ]
+    }))
+
+    let routesToConfigure = []
+    let routesToCreate = []
+
+    _.each(self.configuration.mappings, (recipients, email) => {
+      routesToConfigure.push({
+        expression: 'match_recipient("' + email + '")',
+        action: [ 'forward("' + recipients.join(',') + '")', 'stop()' ]
+      })
+
+      routesToConfigure.push({
+        expression: 'match_header("Cc", "' + email + '")',
+        action: [ 'forward("' + recipients.join(',') + '")', 'stop()' ]
+      })
+
+      routesToConfigure.push({
+        expression: 'match_header("Bcc", "' + email + '")',
+        action: [ 'forward("' + recipients.join(',') + '")', 'stop()' ]
+      })
+    })
+
+    for (var i in routesToConfigure) {
+      let hash = self.hashRoute(routesToConfigure[i])
+
+      if (_.has(routes, hash)) {
+        delete routes[hash]
+      } else {
+        routesToCreate.push(routesToConfigure[i])
+      }
+    }
+
+    self.logger.log('info', 'Creating %d routes...', routesToCreate.length)
+
+    for (var i in routesToCreate) {
+      await self.mailgun.post('/routes', routesToCreate[i])
+    }
+
+    self.logger.log('info', 'Cleaning up %d routes...', _.keys(routes).length)
+
+    for (var i in routes) {
+      await self.mailgun.delete('/routes/' + routes[i].id)
+    }
+
+    let domainsToVerify = await self.mailgun.get('/domains')
+    domainsToVerify = domainsToVerify.items.filter((item) => item.state === 'unverified')
+
+    let domainNamesToVerify = domainsToVerify.map((domain) => domain.name)
+
+    if (domainNamesToVerify.length > 0) {
+      self.logger.log('info', 'Verifying domains: %s', domainNamesToVerify)
+
+      let currentDomains = null
+      let verifiedDomains = null
+
+      let domainsVerifiedWhileWaiting = []
+
+      do {
+        for (var i in domainsToVerify) {
+          if (domainsVerifiedWhileWaiting.indexOf(domainsToVerify[i].name) === -1) {
+            await self.mailgun.put('/domains/' + domainsToVerify[i].name + '/verify')
+          }
+        }
+
+        await utils.sleep(15000)
+
+        currentDomains = await self.mailgun.get('/domains')
+        currentDomains = currentDomains.items
+
+        verifiedDomains = currentDomains.filter((item) => item.state === 'active')
+
+        let domainsVerifiedDuringLastRun = verifiedDomains.map((domain) => domain.name)
+        domainsVerifiedDuringLastRun = _.difference(domainsVerifiedWhileWaiting, domainsVerifiedDuringLastRun)
+
+        if (domainsVerifiedDuringLastRun.length > 0) {
+          self.logger.log('info', 'Verified domains: %s', domainsVerifiedDuringLastRun)
+        }
+
+        domainsVerifiedWhileWaiting = _.uniq(domainsVerifiedWhileWaiting.concat(verifiedDomains.map((domain) => domain.name)))
+      } while (currentDomains.length !== verifiedDomains.length)
+    }
+
+    self.logger.log('info', 'Deployment completed!')
+  }
 
 }
