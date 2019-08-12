@@ -18,6 +18,55 @@ module.exports = class MailDispatcher {
 
     self.configuration = config
 
+    if (!!self.configuration.defaultTo && _.isString(self.configuration.defaultTo)) {
+      self.configuration.defaultTo = [ self.configuration.defaultTo ]
+    }
+
+    if (!self.configuration.defaultTo || !_.isArray(self.configuration.defaultTo)) {
+      self.configuration.defaultTo = false
+    }
+
+    if (!!self.configuration.domains) {
+      self.configuration.domains = self.configuration.domains.map((entry, key) => {
+        let defaultConfiguration = {
+          'zone': null,
+          'setupDns': true,
+          'additionalSenders': [],
+          'blockSpam': false
+        }
+
+        if (typeof entry === 'string') {
+          return _.extend(defaultConfiguration, {
+            domain: entry
+          })
+        }
+
+        if (typeof entry === 'object') {
+          if (!!entry.defaultTo && _.isString(entry.defaultTo)) {
+            entry.defaultTo = [ entry.defaultTo ]
+          }
+
+          if (typeof entry.defaultTo === 'undefined' || (_.isBoolean(entry.defaultTo) && entry.defaultTo === true)) {
+            entry.defaultTo = self.configuration.defaultTo
+          }
+
+          if (!!entry.defaultTo && !_.isArray(entry.defaultTo)) {
+            entry.defaultTo = false
+          }
+
+          if (typeof entry.additionalSenders === 'string') {
+            entry.additionalSenders = [ entry.additionalSenders ]
+          }
+
+          return _.extend(defaultConfiguration, entry)
+        }
+
+        return null
+      }).filter((entry) => !!entry && !!entry.domain)
+    } else {
+      self.configuration.domains = []
+    }
+
     if (!!self.configuration.mappings) {
       let entries = []
 
@@ -72,35 +121,6 @@ module.exports = class MailDispatcher {
       self.configuration.mappings = {}
     }
 
-    if (!!self.configuration.domains) {
-      self.configuration.domains = self.configuration.domains.map((entry, key) => {
-        let defaultConfiguration = {
-          'zone': null,
-          'setupDns': true,
-          'additionalSenders': [],
-          'blockSpam': false
-        }
-
-        if (typeof entry === 'string') {
-          return _.extend(defaultConfiguration, {
-            domain: entry
-          })
-        }
-
-        if (typeof entry === 'object') {
-          if (typeof entry.additionalSenders === 'string') {
-            entry.additionalSenders = [ entry.additionalSenders ]
-          }
-
-          return _.extend(defaultConfiguration, entry)
-        }
-
-        return null
-      }).filter((entry) => !!entry)
-    } else {
-      self.configuration.domains = []
-    }
-
     AWS.config.update({
       credentials: {
         accessKeyId: self.configuration.aws.accessKey,
@@ -149,7 +169,7 @@ module.exports = class MailDispatcher {
   }
 
   hashRoute(route) {
-    return [].concat([ route.expression ], route.actions || route.action).join(':')
+    return [].concat([ route.expression ], route.actions || route.action).join(':') + '@' + (route.priority || 0)
   }
 
   chopString(str, size) {
@@ -567,21 +587,53 @@ module.exports = class MailDispatcher {
     let routesToCreate = []
 
     _.each(self.configuration.mappings, (recipients, email) => {
+      let action = [ 'forward("' + recipients.join(',') + '")', 'stop()' ]
+
       routesToConfigure.push({
         expression: 'match_recipient("' + email + '")',
-        action: [ 'forward("' + recipients.join(',') + '")', 'stop()' ]
+        action: action,
+        priority: 10
       })
 
       routesToConfigure.push({
         expression: 'match_header("Cc", "' + email + '")',
-        action: [ 'forward("' + recipients.join(',') + '")', 'stop()' ]
+        action: action,
+        priority: 10
       })
 
       routesToConfigure.push({
         expression: 'match_header("Bcc", "' + email + '")',
-        action: [ 'forward("' + recipients.join(',') + '")', 'stop()' ]
+        action: action,
+        priority: 10
       })
     })
+
+    for (var i in self.configuration.domains) {
+      let domain = self.configuration.domains[i]
+      let domainName = self.configuration.domains[i].domain
+
+      if (!!domain.defaultTo) {
+        let action = [ 'forward("' + domain.defaultTo.join(',') + '")', 'stop()' ]
+
+        routesToConfigure.push({
+          expression: 'match_recipient(".*@' + domainName + '")',
+          action: action,
+          priority: 20
+        })
+
+        routesToConfigure.push({
+          expression: 'match_header("Cc", ".*@' + domainName + '")',
+          action: action,
+          priority: 20
+        })
+
+        routesToConfigure.push({
+          expression: 'match_header("Bcc", ".*@' + domainName + '")',
+          action: action,
+          priority: 20
+        })
+      }
+    }
 
     for (var i in routesToConfigure) {
       let hash = self.hashRoute(routesToConfigure[i])

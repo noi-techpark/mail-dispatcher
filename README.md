@@ -88,12 +88,21 @@ The following snippet is an example configuration file. Please make sure to repl
 
 These properties represent the credentials of a valid AWS account.
 
+#### Configuration property: defaultTo
+
+    Required: false
+    Type: string or array of strings
+
+Defines a list of recipients that will receive emails that don't match any of the specified mappings.
+
 #### Configuration property: domains
 
     Required: true
-    Type: array (objects with structure { "domain", "zone", "blockSpam" } or strings)
+    Type: array (objects with structure { "domain", "zone", "defaultTo", "blockSpam" } or strings)
 
 The domains enabled for forwarding, if only a string is supplied then the default options for the domain are used. If you use a subdomain, then you can define the hosted zone used on Route53 - otherwise the given domain name will be used.
+
+It is possible to define a default recipients mapping separately from the global configuration with `defaultTo`. If you just want to apply the global configuration, then you can specify nothing or just `"defaultTo": true` - on the other hand if you have a global configuration but you don't want to apply it to a specific domain, then `"defaultTo": false` is what you're looking for.
 
 By default, the spam will not be blocking but only "tagged" by MailGun's incoming email servers. Specifying `"blockSpam": true` will make sure spam emails won't be forwarded at all.
 
