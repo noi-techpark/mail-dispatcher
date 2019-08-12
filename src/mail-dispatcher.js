@@ -349,7 +349,7 @@ module.exports = class MailDispatcher {
 
       let hostedZone = null
 
-      let hostedZones = hostedZonesResult.HostedZones.filter((zone) => hostedZoneName.endsWith(zone.Name.slice(0, -1)))
+      let hostedZones = hostedZonesResult.HostedZones.filter((zone) => hostedZoneName === zone.Name.slice(0, -1))
 
       if (hostedZones.length === 0) {
         let newHostedZoneResult = await self.route53.createHostedZone({
