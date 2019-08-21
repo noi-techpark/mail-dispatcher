@@ -18,6 +18,55 @@ module.exports = class MailDispatcher {
 
     self.configuration = config
 
+    if (!!self.configuration.defaultTo && _.isString(self.configuration.defaultTo)) {
+      self.configuration.defaultTo = [ self.configuration.defaultTo ]
+    }
+
+    if (!self.configuration.defaultTo || !_.isArray(self.configuration.defaultTo)) {
+      self.configuration.defaultTo = false
+    }
+
+    if (!!self.configuration.domains) {
+      self.configuration.domains = self.configuration.domains.map((entry, key) => {
+        let defaultConfiguration = {
+          'zone': null,
+          'setupDns': true,
+          'additionalSenders': [],
+          'blockSpam': false
+        }
+
+        if (typeof entry === 'string') {
+          return _.extend(defaultConfiguration, {
+            domain: entry
+          })
+        }
+
+        if (typeof entry === 'object') {
+          if (!!entry.defaultTo && _.isString(entry.defaultTo)) {
+            entry.defaultTo = [ entry.defaultTo ]
+          }
+
+          if (typeof entry.defaultTo === 'undefined' || (_.isBoolean(entry.defaultTo) && entry.defaultTo === true)) {
+            entry.defaultTo = self.configuration.defaultTo
+          }
+
+          if (!!entry.defaultTo && !_.isArray(entry.defaultTo)) {
+            entry.defaultTo = false
+          }
+
+          if (typeof entry.additionalSenders === 'string') {
+            entry.additionalSenders = [ entry.additionalSenders ]
+          }
+
+          return _.extend(defaultConfiguration, entry)
+        }
+
+        return null
+      }).filter((entry) => !!entry && !!entry.domain)
+    } else {
+      self.configuration.domains = []
+    }
+
     if (!!self.configuration.mappings) {
       let entries = []
 
@@ -72,35 +121,6 @@ module.exports = class MailDispatcher {
       self.configuration.mappings = {}
     }
 
-    if (!!self.configuration.domains) {
-      self.configuration.domains = self.configuration.domains.map((entry, key) => {
-        let defaultConfiguration = {
-          'zone': null,
-          'setupDns': true,
-          'additionalSenders': [],
-          'blockSpam': false
-        }
-
-        if (typeof entry === 'string') {
-          return _.extend(defaultConfiguration, {
-            domain: entry
-          })
-        }
-
-        if (typeof entry === 'object') {
-          if (typeof entry.additionalSenders === 'string') {
-            entry.additionalSenders = [ entry.additionalSenders ]
-          }
-
-          return _.extend(defaultConfiguration, entry)
-        }
-
-        return null
-      }).filter((entry) => !!entry)
-    } else {
-      self.configuration.domains = []
-    }
-
     AWS.config.update({
       credentials: {
         accessKeyId: self.configuration.aws.accessKey,
@@ -149,7 +169,7 @@ module.exports = class MailDispatcher {
   }
 
   hashRoute(route) {
-    return [].concat([ route.expression ], route.actions || route.action).join(':')
+    return [].concat([ route.expression ], route.actions || route.action).join(':') + '@' + (route.priority || 0)
   }
 
   chopString(str, size) {
@@ -263,6 +283,8 @@ module.exports = class MailDispatcher {
 
     self.logger.log('info', 'Configured domains: %s', _.pluck(self.configuration.domains, 'domain'))
 
+    let skippedDomains = []
+
     let cleanupChanges = {}
     let setupChanges = {}
 
@@ -295,211 +317,217 @@ module.exports = class MailDispatcher {
 
           domainEntry = false
         }
+
+        if (!domainEntry) {
+          domainEntry = await self.mailgun.post('/domains', {
+            name: domainName,
+            spam_action: spamAction
+          })
+        }
       } catch (err) {
-        // noop
-      }
+        if (!!err.code && err.code !== 404) {
+          self.logger.log('error', 'Error setting up domain "%s": %s', domainName, err.message || '(no additional error message)')
 
-      if (!domainEntry) {
-        domainEntry = await self.mailgun.post('/domains', {
-          name: domainName,
-          spam_action: spamAction
-        })
-      }
-
-      let receivingRecords = domainEntry.receiving_dns_records
-
-      let spfSenderToConfigure = null
-
-      let spfRecords = domainEntry.sending_dns_records.filter((record) => record.record_type === 'TXT' && record.value.includes('v=spf'))
-      if (!!spfRecords) {
-        let match = spfRecords[0].value.match(/v=spf[0-9]{1} include\:([^\s]+)/)
-        if (!!match) {
-          spfSenderToConfigure = match[1]
+          skippedDomains.push(domainName)
         }
       }
 
-      let verificationRecordToConfigure = null
+      if (!_.contains(skippedDomains, domainName)) {
+        let receivingRecords = domainEntry.receiving_dns_records
 
-      let verificationRecords = domainEntry.sending_dns_records.filter((record) => record.record_type === 'TXT' && record.value.includes('k=rsa'))
-      if (!!verificationRecords) {
-        verificationRecordToConfigure = verificationRecords[0]
-      }
+        let spfSenderToConfigure = null
 
-      let hostedZoneName = domainToDeploy.zone || domainName
-
-      let hostedZone = null
-
-      let hostedZones = hostedZonesResult.HostedZones.filter((zone) => hostedZoneName.endsWith(zone.Name.slice(0, -1)))
-
-      if (hostedZones.length === 0) {
-        let newHostedZoneResult = await self.route53.createHostedZone({
-          CallerReference: hostedZoneName + '-' + (new Date().getTime()),
-          Name: hostedZoneName,
-          HostedZoneConfig: {
-            PrivateZone: false
+        let spfRecords = domainEntry.sending_dns_records.filter((record) => record.record_type === 'TXT' && record.value.includes('v=spf'))
+        if (!!spfRecords) {
+          let match = spfRecords[0].value.match(/v=spf[0-9]{1} include\:([^\s]+)/)
+          if (!!match) {
+            spfSenderToConfigure = match[1]
           }
-        }).promise()
+        }
 
-        hostedZone = newHostedZoneResult.HostedZone
+        let verificationRecordToConfigure = null
+
+        let verificationRecords = domainEntry.sending_dns_records.filter((record) => record.record_type === 'TXT' && record.value.includes('k=rsa'))
+        if (!!verificationRecords) {
+          verificationRecordToConfigure = verificationRecords[0]
+        }
+
+        let hostedZoneName = domainToDeploy.zone || domainName
+
+        let hostedZone = null
+
+        let hostedZones = hostedZonesResult.HostedZones.filter((zone) => hostedZoneName === zone.Name.slice(0, -1))
+
+        if (hostedZones.length === 0) {
+          let newHostedZoneResult = await self.route53.createHostedZone({
+            CallerReference: hostedZoneName + '-' + (new Date().getTime()),
+            Name: hostedZoneName,
+            HostedZoneConfig: {
+              PrivateZone: false
+            }
+          }).promise()
+
+          hostedZone = newHostedZoneResult.HostedZone
+
+          let recordSetsResult = await self.route53.listResourceRecordSets({
+            HostedZoneId: hostedZone.Id
+          }).promise()
+
+          let nameserverRecords = recordSetsResult.ResourceRecordSets.filter((recordSet) => recordSet.Type === 'NS')
+
+          self.logger.log('info', 'Configured hosted zone for "%s": %s', hostedZoneName, _.pluck(_.flatten(nameserverRecords.map((recordSet) => recordSet.ResourceRecords)), 'Value').join(', '))
+        } else {
+          hostedZone = hostedZones[0]
+        }
 
         let recordSetsResult = await self.route53.listResourceRecordSets({
           HostedZoneId: hostedZone.Id
         }).promise()
 
-        let nameserverRecords = recordSetsResult.ResourceRecordSets.filter((recordSet) => recordSet.Type === 'NS')
+        let recordSets = recordSetsResult.ResourceRecordSets
 
-        self.logger.log('info', 'Configured hosted zone for "%s": %s', hostedZoneName, _.pluck(_.flatten(nameserverRecords.map((recordSet) => recordSet.ResourceRecords)), 'Value').join(', '))
-      } else {
-        hostedZone = hostedZones[0]
-      }
+        let domainSpecificRecordSets = recordSets.filter((recordSet) => recordSet.Name.slice(0, -1) === domainName)
+        let existingMxRecords = domainSpecificRecordSets.filter((recordSet) => recordSet.Type === 'MX')
+        let existingSpfRecords = domainSpecificRecordSets.filter((recordSet) => recordSet.Type === 'TXT' && recordSet.ResourceRecords.filter((record) => record.Value.includes('v=spf1')).length > 0)
+        let existingVerificationRecords = recordSets.filter((recordSet) => recordSet.Type === 'TXT' && recordSet.Name.includes('_domainkey.' + domainName))
 
-      let recordSetsResult = await self.route53.listResourceRecordSets({
-        HostedZoneId: hostedZone.Id
-      }).promise()
+        let domainSpecificCleanupChanges = []
+        let domainSpecificSetupChanges = []
 
-      let recordSets = recordSetsResult.ResourceRecordSets
+        if (!!receivingRecords && receivingRecords.length > 0) {
+          let mxValues = receivingRecords.map((record) => {
+            return record.priority + ' ' + record.value
+          })
 
-      let domainSpecificRecordSets = recordSets.filter((recordSet) => recordSet.Name.slice(0, -1) === domainName)
-      let existingMxRecords = domainSpecificRecordSets.filter((recordSet) => recordSet.Type === 'MX')
-      let existingSpfRecords = domainSpecificRecordSets.filter((recordSet) => recordSet.Type === 'TXT' && recordSet.ResourceRecords.filter((record) => record.Value.includes('v=spf1')).length > 0)
-      let existingVerificationRecords = recordSets.filter((recordSet) => recordSet.Type === 'TXT' && recordSet.Name.includes('_domainkey.' + domainName))
+          let existingMxValues = _.flatten(existingMxRecords.map((record) => record.ResourceRecords)).map((entry) => entry.Value)
 
-      let domainSpecificCleanupChanges = []
-      let domainSpecificSetupChanges = []
+          if (existingMxRecords.length === 0 || _.difference(mxValues, existingMxValues).length > 0) {
+            domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingMxRecords.map((record) => {
+              return {
+                Action: 'DELETE',
+                ResourceRecordSet: record
+              }
+            }))
 
-      if (!!receivingRecords && receivingRecords.length > 0) {
-        let mxValues = receivingRecords.map((record) => {
-          return record.priority + ' ' + record.value
-        })
-
-        let existingMxValues = _.flatten(existingMxRecords.map((record) => record.ResourceRecords)).map((entry) => entry.Value)
-
-        if (existingMxRecords.length === 0 || _.difference(mxValues, existingMxValues).length > 0) {
+            domainSpecificSetupChanges.push({
+              Action: 'CREATE',
+              ResourceRecordSet: {
+                Name: domainName,
+                Type: 'MX',
+                TTL: 300,
+                ResourceRecords: mxValues.map((record) => {
+                  return { Value: record }
+                })
+              }
+            })
+          }
+        } else {
           domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingMxRecords.map((record) => {
             return {
               Action: 'DELETE',
               ResourceRecordSet: record
             }
           }))
-
-          domainSpecificSetupChanges.push({
-            Action: 'CREATE',
-            ResourceRecordSet: {
-              Name: domainName,
-              Type: 'MX',
-              TTL: 300,
-              ResourceRecords: mxValues.map((record) => {
-                return { Value: record }
-              })
-            }
-          })
         }
-      } else {
-        domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingMxRecords.map((record) => {
-          return {
-            Action: 'DELETE',
-            ResourceRecordSet: record
+
+        if (!!spfSenderToConfigure) {
+          let senders = [ 'include:' + spfSenderToConfigure ]
+
+          // TODO include additional/other senders
+
+          let spfValue = '"v=spf1 ' + senders.join(' ') + ' ~all"'
+
+          let existingSpfValue = null
+          if (existingSpfRecords.length === 1 && existingSpfRecords[0].ResourceRecords.length > 0) {
+            existingSpfValue = existingSpfRecords[0].ResourceRecords[0].Value
           }
-        }))
-      }
 
-      if (!!spfSenderToConfigure) {
-        let senders = [ 'include:' + spfSenderToConfigure ]
+          if (existingSpfRecords.length === 0 || spfValue !== existingSpfValue) {
+            domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingSpfRecords.map((record) => {
+              return {
+                Action: 'DELETE',
+                ResourceRecordSet: record
+              }
+            }))
 
-        // TODO include additional/other senders
-
-        let spfValue = '"v=spf1 ' + senders.join(' ') + ' ~all"'
-
-        let existingSpfValue = null
-        if (existingSpfRecords.length === 1 && existingSpfRecords[0].ResourceRecords.length > 0) {
-          existingSpfValue = existingSpfRecords[0].ResourceRecords[0].Value
-        }
-
-        if (existingSpfRecords.length === 0 || spfValue !== existingSpfValue) {
+            domainSpecificSetupChanges.push({
+              Action: 'CREATE',
+              ResourceRecordSet: {
+                Name: domainName,
+                Type: 'TXT',
+                TTL: 300,
+                ResourceRecords: [
+                  {
+                    Value: spfValue
+                  }
+                ]
+              }
+            })
+          }
+        } else {
           domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingSpfRecords.map((record) => {
             return {
               Action: 'DELETE',
               ResourceRecordSet: record
             }
           }))
-
-          domainSpecificSetupChanges.push({
-            Action: 'CREATE',
-            ResourceRecordSet: {
-              Name: domainName,
-              Type: 'TXT',
-              TTL: 300,
-              ResourceRecords: [
-                {
-                  Value: spfValue
-                }
-              ]
-            }
-          })
         }
-      } else {
-        domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingSpfRecords.map((record) => {
-          return {
-            Action: 'DELETE',
-            ResourceRecordSet: record
+
+        if (!!verificationRecordToConfigure) {
+          let existingVerificationValue = null
+          if (existingVerificationRecords.length === 1 && existingVerificationRecords[0].ResourceRecords.length > 0) {
+            let parts = existingVerificationRecords[0].ResourceRecords[0].Value.split('" "')
+            parts = parts.map((part) => part.replace('"', ''))
+
+            existingVerificationValue = parts.join('').replace('"', '')
           }
-        }))
-      }
 
-      if (!!verificationRecordToConfigure) {
-        let existingVerificationValue = null
-        if (existingVerificationRecords.length === 1 && existingVerificationRecords[0].ResourceRecords.length > 0) {
-          let parts = existingVerificationRecords[0].ResourceRecords[0].Value.split('" "')
-          parts = parts.map((part) => part.replace('"', ''))
+          if (existingVerificationRecords.length === 0 || verificationRecordToConfigure.value !== existingVerificationValue) {
+            let parts = self.chopString(verificationRecordToConfigure.value, 240)
 
-          existingVerificationValue = parts.join('').replace('"', '')
-        }
+            domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingVerificationRecords.map((record) => {
+              return {
+                Action: 'DELETE',
+                ResourceRecordSet: record
+              }
+            }))
 
-        if (existingVerificationRecords.length === 0 || verificationRecordToConfigure.value !== existingVerificationValue) {
-          let parts = self.chopString(verificationRecordToConfigure.value, 240)
-
+            domainSpecificSetupChanges.push({
+              Action: 'CREATE',
+              ResourceRecordSet: {
+                Name: verificationRecordToConfigure.name,
+                Type: 'TXT',
+                TTL: 300,
+                ResourceRecords: parts.map((part) => {
+                  return { Value: '"' + part + '"' }
+                })
+              }
+            })
+          }
+        } else {
           domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingVerificationRecords.map((record) => {
             return {
               Action: 'DELETE',
               ResourceRecordSet: record
             }
           }))
-
-          domainSpecificSetupChanges.push({
-            Action: 'CREATE',
-            ResourceRecordSet: {
-              Name: verificationRecordToConfigure.name,
-              Type: 'TXT',
-              TTL: 300,
-              ResourceRecords: parts.map((part) => {
-                return { Value: '"' + part + '"' }
-              })
-            }
-          })
         }
-      } else {
-        domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingVerificationRecords.map((record) => {
-          return {
-            Action: 'DELETE',
-            ResourceRecordSet: record
+
+        if (domainSpecificCleanupChanges.length > 0) {
+          if (!_.has(cleanupChanges, hostedZone.Id)) {
+            cleanupChanges[hostedZone.Id] = []
           }
-        }))
-      }
 
-      if (domainSpecificCleanupChanges.length > 0) {
-        if (!_.has(cleanupChanges, hostedZone.Id)) {
-          cleanupChanges[hostedZone.Id] = []
+          cleanupChanges[hostedZone.Id] = cleanupChanges[hostedZone.Id].concat(domainSpecificCleanupChanges)
         }
 
-        cleanupChanges[hostedZone.Id] = cleanupChanges[hostedZone.Id].concat(domainSpecificCleanupChanges)
-      }
+        if (domainSpecificSetupChanges.length > 0) {
+          if (!_.has(setupChanges, hostedZone.Id)) {
+            setupChanges[hostedZone.Id] = []
+          }
 
-      if (domainSpecificSetupChanges.length > 0) {
-        if (!_.has(setupChanges, hostedZone.Id)) {
-          setupChanges[hostedZone.Id] = []
+          setupChanges[hostedZone.Id] = setupChanges[hostedZone.Id].concat(domainSpecificSetupChanges)
         }
-
-        setupChanges[hostedZone.Id] = setupChanges[hostedZone.Id].concat(domainSpecificSetupChanges)
       }
     }
 
@@ -548,11 +576,15 @@ module.exports = class MailDispatcher {
     }
 
     if (!_.isEmpty(existingDomains)) {
-      for (var domainName in existingDomains) {
-        await self.mailgun.delete('/domains/' + domainName)
-      }
+      try {
+        for (var domainName in existingDomains) {
+          await self.mailgun.delete('/domains/' + domainName)
+        }
 
-      self.logger.log('info', 'Cleaned up left-over domains: %s', _.keys(existingDomains))
+        self.logger.log('info', 'Cleaned up left-over domains: %s', _.keys(existingDomains))
+      } catch (err) {
+        self.logger.log('error', 'Error while cleaning up domains: %s', err.message || '(no additional error message)')
+      }
     }
 
     self.logger.log('info', 'Configuring mapping routes...')
@@ -567,21 +599,53 @@ module.exports = class MailDispatcher {
     let routesToCreate = []
 
     _.each(self.configuration.mappings, (recipients, email) => {
+      let action = [ 'forward("' + recipients.join(',') + '")', 'stop()' ]
+
       routesToConfigure.push({
         expression: 'match_recipient("' + email + '")',
-        action: [ 'forward("' + recipients.join(',') + '")', 'stop()' ]
+        action: action,
+        priority: 10
       })
 
       routesToConfigure.push({
         expression: 'match_header("Cc", "' + email + '")',
-        action: [ 'forward("' + recipients.join(',') + '")', 'stop()' ]
+        action: action,
+        priority: 10
       })
 
       routesToConfigure.push({
         expression: 'match_header("Bcc", "' + email + '")',
-        action: [ 'forward("' + recipients.join(',') + '")', 'stop()' ]
+        action: action,
+        priority: 10
       })
     })
+
+    for (var i in self.configuration.domains) {
+      let domain = self.configuration.domains[i]
+      let domainName = self.configuration.domains[i].domain
+
+      if (!!domain.defaultTo) {
+        let action = [ 'forward("' + domain.defaultTo.join(',') + '")', 'stop()' ]
+
+        routesToConfigure.push({
+          expression: 'match_recipient(".*@' + domainName + '")',
+          action: action,
+          priority: 20
+        })
+
+        routesToConfigure.push({
+          expression: 'match_header("Cc", ".*@' + domainName + '")',
+          action: action,
+          priority: 20
+        })
+
+        routesToConfigure.push({
+          expression: 'match_header("Bcc", ".*@' + domainName + '")',
+          action: action,
+          priority: 20
+        })
+      }
+    }
 
     for (var i in routesToConfigure) {
       let hash = self.hashRoute(routesToConfigure[i])
@@ -593,54 +657,66 @@ module.exports = class MailDispatcher {
       }
     }
 
-    self.logger.log('info', 'Creating %d routes...', routesToCreate.length)
+    try {
+      self.logger.log('info', 'Creating %d routes...', routesToCreate.length)
 
-    for (var i in routesToCreate) {
-      await self.mailgun.post('/routes', routesToCreate[i])
+      for (var i in routesToCreate) {
+        await self.mailgun.post('/routes', routesToCreate[i])
+      }
+    } catch (err) {
+      self.logger.log('error', 'Error while creating routes: %s', err.message || '(no additional error message)')
     }
 
-    self.logger.log('info', 'Cleaning up %d routes...', _.keys(routes).length)
+    try {
+      self.logger.log('info', 'Cleaning up %d routes...', _.keys(routes).length)
 
-    for (var i in routes) {
-      await self.mailgun.delete('/routes/' + routes[i].id)
+      for (var i in routes) {
+        await self.mailgun.delete('/routes/' + routes[i].id)
+      }
+    } catch (err) {
+      self.logger.log('error', 'Error while cleaning up routes: %s', err.message || '(no additional error message)')
     }
 
-    let domainsToVerify = await self.mailgun.get('/domains')
-    domainsToVerify = domainsToVerify.items.filter((item) => item.state === 'unverified')
+    try {
+      let domainsToVerify = await self.mailgun.get('/domains')
+      domainsToVerify = domainsToVerify.items.filter((item) => item.state === 'unverified')
 
-    let domainNamesToVerify = domainsToVerify.map((domain) => domain.name)
+      let domainNamesToVerify = domainsToVerify.map((domain) => domain.name)
 
-    if (domainNamesToVerify.length > 0) {
-      self.logger.log('info', 'Verifying domains: %s', domainNamesToVerify)
+      if (domainNamesToVerify.length > 0) {
+        self.logger.log('info', 'Verifying domains: %s', domainNamesToVerify)
 
-      let currentDomains = null
-      let verifiedDomains = null
+        let currentDomains = null
+        let verifiedDomains = null
 
-      let domainsVerifiedWhileWaiting = []
+        let domainsVerifiedWhileWaiting = []
 
-      do {
-        for (var i in domainsToVerify) {
-          if (domainsVerifiedWhileWaiting.indexOf(domainsToVerify[i].name) === -1) {
-            await self.mailgun.put('/domains/' + domainsToVerify[i].name + '/verify')
+        do {
+          for (var i in domainsToVerify) {
+            if (domainsVerifiedWhileWaiting.indexOf(domainsToVerify[i].name) === -1) {
+              await self.mailgun.put('/domains/' + domainsToVerify[i].name + '/verify')
+            }
           }
-        }
 
-        await utils.sleep(15000)
+          await utils.sleep(15000)
 
-        currentDomains = await self.mailgun.get('/domains')
-        currentDomains = currentDomains.items
+          currentDomains = await self.mailgun.get('/domains')
+          currentDomains = currentDomains.items
 
-        verifiedDomains = currentDomains.filter((item) => item.state === 'active')
+          verifiedDomains = currentDomains.filter((item) => item.state === 'active')
 
-        let domainsVerifiedDuringLastRun = verifiedDomains.map((domain) => domain.name)
-        domainsVerifiedDuringLastRun = _.difference(domainsVerifiedWhileWaiting, domainsVerifiedDuringLastRun)
+          let domainsVerifiedDuringLastRun = verifiedDomains.map((domain) => domain.name)
+          domainsVerifiedDuringLastRun = _.difference(domainsVerifiedWhileWaiting, domainsVerifiedDuringLastRun)
 
-        if (domainsVerifiedDuringLastRun.length > 0) {
-          self.logger.log('info', 'Verified domains: %s', domainsVerifiedDuringLastRun)
-        }
+          if (domainsVerifiedDuringLastRun.length > 0) {
+            self.logger.log('info', 'Verified domains: %s', domainsVerifiedDuringLastRun)
+          }
 
-        domainsVerifiedWhileWaiting = _.uniq(domainsVerifiedWhileWaiting.concat(verifiedDomains.map((domain) => domain.name)))
-      } while (currentDomains.length !== verifiedDomains.length)
+          domainsVerifiedWhileWaiting = _.uniq(domainsVerifiedWhileWaiting.concat(verifiedDomains.map((domain) => domain.name)))
+        } while (currentDomains.length !== verifiedDomains.length)
+      }
+    } catch (err) {
+      self.logger.log('error', 'Error while verifying domains: %s', err.message || '(no additional error message)')
     }
 
     self.logger.log('info', 'Deployment completed!')
