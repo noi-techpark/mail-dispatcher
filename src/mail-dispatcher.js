@@ -294,8 +294,6 @@ module.exports = class MailDispatcher {
 
       self.logger.log('info', 'Processing domain: %s', domainName)
 
-      let spamAction = !!domainToDeploy.blockSpam ? 'block' : 'tag'
-
       let domainEntry = null
 
       try {
@@ -303,7 +301,7 @@ module.exports = class MailDispatcher {
 
         delete existingDomains[domainName]
 
-        if (spamAction !== domainEntry.domain.spam_action) {
+        if (domainEntry.domain.spam_action !== 'tag') {
           await self.mailgun.delete('/domains/' + domainName)
 
           var domainsToWatch = null
@@ -320,17 +318,23 @@ module.exports = class MailDispatcher {
 
       } catch (err) {
         if (!!err.code && err.code !== 404) {
-          self.logger.log('error', 'Error setting up domain "%s": %s', domainName, err.message || '(no additional error message)')
+          self.logger.log('error', 'Error cleaning up domain "%s": %s', domainName, err.message || '(no additional error message)')
 
           skippedDomains.push(domainName)
         }
       }
 
-      if (!domainEntry) {
-        domainEntry = await self.mailgun.post('/domains', {
-          name: domainName,
-          spam_action: spamAction
-        })
+      try {
+        if (!domainEntry) {
+          domainEntry = await self.mailgun.post('/domains', {
+            name: domainName,
+            spam_action: 'tag'
+          })
+        }
+      } catch (err) {
+        self.logger.log('error', 'Error setting up domain "%s": %s', domainName, err.message || '(no additional error message)')
+
+        skippedDomains.push(domainName)
       }
 
       if (!_.contains(skippedDomains, domainName)) {
