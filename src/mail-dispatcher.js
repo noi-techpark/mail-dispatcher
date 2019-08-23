@@ -603,6 +603,8 @@ module.exports = class MailDispatcher {
     let routesToConfigure = []
     let routesToCreate = []
 
+    // TODO block spam messages if configured to do so
+
     _.each(self.configuration.mappings, (recipients, email) => {
       let action = [ 'forward("' + recipients.join(',') + '")', 'stop()' ]
 
