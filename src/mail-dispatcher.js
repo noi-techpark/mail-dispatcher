@@ -318,18 +318,19 @@ module.exports = class MailDispatcher {
           domainEntry = false
         }
 
-        if (!domainEntry) {
-          domainEntry = await self.mailgun.post('/domains', {
-            name: domainName,
-            spam_action: spamAction
-          })
-        }
       } catch (err) {
         if (!!err.code && err.code !== 404) {
           self.logger.log('error', 'Error setting up domain "%s": %s', domainName, err.message || '(no additional error message)')
 
           skippedDomains.push(domainName)
         }
+      }
+
+      if (!domainEntry) {
+        domainEntry = await self.mailgun.post('/domains', {
+          name: domainName,
+          spam_action: spamAction
+        })
       }
 
       if (!_.contains(skippedDomains, domainName)) {
