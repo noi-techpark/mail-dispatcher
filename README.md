@@ -59,7 +59,9 @@ The following snippet is an example configuration file. Please make sure to repl
         },
         {
           "domain": "mails.example.com",
-          "zone": "example.com"
+          "zone": "example.com",
+          "additionalSenders": [ "..." ],
+          "additionalTxtRecords: [ "...", "..." ]
         },
         "anotherexample.com"
       ],
