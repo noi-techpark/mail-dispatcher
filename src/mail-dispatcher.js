@@ -32,6 +32,7 @@ module.exports = class MailDispatcher {
           'zone': null,
           'setupDns': true,
           'additionalSenders': [],
+          'additionalTxtRecords': [],
           'blockSpam': false
         }
 
@@ -57,6 +58,10 @@ module.exports = class MailDispatcher {
           if (typeof entry.additionalSenders === 'string') {
             entry.additionalSenders = [ entry.additionalSenders ]
           }
+
+          entry.additionalTxtRecords = entry.additionalTxtRecords.filter((recordValue) => {
+            return !!recordValue
+          })
 
           return _.extend(defaultConfiguration, entry)
         }
@@ -194,6 +199,21 @@ module.exports = class MailDispatcher {
       let domainToDeploy = self.configuration.domains[i]
       let domainName = domainToDeploy.domain
 
+      let domainEntry = null
+
+      try {
+        domainEntry = await self.mailgun.get('/domains/' + domainName)
+      } catch (err) {
+        self.logger.log('error', 'Error getting domain information "%s": %s', domainName, err.message || '(no additional error message)')
+      }
+
+      let verificationRecordToConfigure = null
+
+      let verificationRecords = domainEntry.sending_dns_records.filter((record) => record.record_type === 'TXT' && record.value.includes('k=rsa'))
+      if (!!verificationRecords) {
+        verificationRecordToConfigure = verificationRecords[0]
+      }
+
       let hostedZones = hostedZonesResult.HostedZones.filter((zone) => (domainToDeploy.zone || domainName).endsWith(zone.Name.slice(0, -1)))
 
       if (hostedZones.length > 0) {
@@ -210,7 +230,7 @@ module.exports = class MailDispatcher {
             return true
           }
 
-          if (recordSet.Type === 'TXT' && recordSet.Name.includes('_domainkey.' + domainName)) {
+          if (recordSet.Type === 'TXT' && (recordSet.Name === verificationRecordToConfigure.name || recordSet.Name === verificationRecordToConfigure.name + '.')) {
             return true
           }
 
@@ -393,8 +413,8 @@ module.exports = class MailDispatcher {
 
         let domainSpecificRecordSets = recordSets.filter((recordSet) => recordSet.Name.slice(0, -1) === domainName)
         let existingMxRecords = domainSpecificRecordSets.filter((recordSet) => recordSet.Type === 'MX')
-        let existingSpfRecords = domainSpecificRecordSets.filter((recordSet) => recordSet.Type === 'TXT' && recordSet.ResourceRecords.filter((record) => record.Value.includes('v=spf1')).length > 0)
-        let existingVerificationRecords = recordSets.filter((recordSet) => recordSet.Type === 'TXT' && recordSet.Name.includes('_domainkey.' + domainName))
+        let existingTxtRecords = domainSpecificRecordSets.filter((recordSet) => recordSet.Type === 'TXT')
+        let existingVerificationRecords = recordSets.filter((recordSet) => recordSet.Type === 'TXT' && (recordSet.Name === verificationRecordToConfigure || recordSet.Name === verificationRecordToConfigure + '.'))
 
         let domainSpecificCleanupChanges = []
         let domainSpecificSetupChanges = []
@@ -435,47 +455,41 @@ module.exports = class MailDispatcher {
           }))
         }
 
+        var txtRecordValues = []
+
         if (!!spfSenderToConfigure) {
-          let senders = [ 'include:' + spfSenderToConfigure ]
+          var senders = [ 'include:' + spfSenderToConfigure ]
 
-          // TODO include additional/other senders
-
-          let spfValue = '"v=spf1 ' + senders.join(' ') + ' ~all"'
-
-          let existingSpfValue = null
-          if (existingSpfRecords.length === 1 && existingSpfRecords[0].ResourceRecords.length > 0) {
-            existingSpfValue = existingSpfRecords[0].ResourceRecords[0].Value
+          if (!!domainToDeploy.additionalSenders) {
+            senders = [].concat(senders, domainToDeploy.additionalSenders.map((sender) => 'include:' + sender))
           }
 
-          if (existingSpfRecords.length === 0 || spfValue !== existingSpfValue) {
-            domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingSpfRecords.map((record) => {
-              return {
-                Action: 'DELETE',
-                ResourceRecordSet: record
-              }
-            }))
+          txtRecordValues.push('v=spf1 ' + senders.join(' ') + ' ~all')
+        }
 
-            domainSpecificSetupChanges.push({
-              Action: 'CREATE',
-              ResourceRecordSet: {
-                Name: domainName,
-                Type: 'TXT',
-                TTL: 300,
-                ResourceRecords: [
-                  {
-                    Value: spfValue
-                  }
-                ]
-              }
-            })
+        if (!!domainToDeploy.additionalTxtRecords) {
+          for (var j in domainToDeploy.additionalTxtRecords) {
+            txtRecordValues.push(domainToDeploy.additionalTxtRecords[j])
           }
-        } else {
-          domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingSpfRecords.map((record) => {
-            return {
-              Action: 'DELETE',
-              ResourceRecordSet: record
+        }
+
+        domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingTxtRecords.map((record) => {
+          return {
+            Action: 'DELETE',
+            ResourceRecordSet: record
+          }
+        }))
+
+        if (txtRecordValues.length > 0) {
+          domainSpecificSetupChanges.push({
+            Action: 'CREATE',
+            ResourceRecordSet: {
+              Name: domainName,
+              Type: 'TXT',
+              TTL: 300,
+              ResourceRecords: txtRecordValues.map((value) => { return { Value: '"' + value + '"' } })
             }
-          }))
+          })
         }
 
         if (!!verificationRecordToConfigure) {
