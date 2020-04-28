@@ -59,9 +59,11 @@ module.exports = class MailDispatcher {
             entry.additionalSenders = [ entry.additionalSenders ]
           }
 
-          entry.additionalTxtRecords = entry.additionalTxtRecords.filter((recordValue) => {
-            return !!recordValue
-          })
+          if (typeof entry.additionalTxtRecords !== 'undefined') {
+            entry.additionalTxtRecords = entry.additionalTxtRecords.filter((recordValue) => {
+              return !!recordValue
+            })
+          }
 
           return _.extend(defaultConfiguration, entry)
         }
