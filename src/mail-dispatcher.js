@@ -416,7 +416,7 @@ module.exports = class MailDispatcher {
         let domainSpecificRecordSets = recordSets.filter((recordSet) => recordSet.Name.slice(0, -1) === domainName)
         let existingMxRecords = domainSpecificRecordSets.filter((recordSet) => recordSet.Type === 'MX')
         let existingTxtRecords = domainSpecificRecordSets.filter((recordSet) => recordSet.Type === 'TXT')
-        let existingVerificationRecords = recordSets.filter((recordSet) => recordSet.Type === 'TXT' && (recordSet.Name === verificationRecordToConfigure || recordSet.Name === verificationRecordToConfigure + '.'))
+        let existingVerificationRecords = recordSets.filter((recordSet) => recordSet.Type === 'TXT' && (recordSet.Name === verificationRecordToConfigure.name || recordSet.Name === verificationRecordToConfigure.name + '.'))
 
         let domainSpecificCleanupChanges = []
         let domainSpecificSetupChanges = []
