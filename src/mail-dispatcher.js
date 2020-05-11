@@ -475,23 +475,33 @@ module.exports = class MailDispatcher {
           }
         }
 
-        domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingTxtRecords.map((record) => {
-          return {
-            Action: 'DELETE',
-            ResourceRecordSet: record
-          }
-        }))
+        var existingTxtValues = []
 
-        if (txtRecordValues.length > 0) {
-          domainSpecificSetupChanges.push({
-            Action: 'CREATE',
-            ResourceRecordSet: {
-              Name: domainName,
-              Type: 'TXT',
-              TTL: 300,
-              ResourceRecords: txtRecordValues.map((value) => { return { Value: '"' + value + '"' } })
+        for (var j in existingTxtRecords) {
+          existingTxtValues = [].concat(existingTxtValues, existingTxtRecords[j].ResourceRecords.map((resourceRecord) => {
+            return resourceRecord.Value.replace(/^"(.*)"$/, '$1')
+          }))
+        }
+
+        if (_.difference(txtRecordValues, existingTxtValues).length > 0) {
+          domainSpecificCleanupChanges = domainSpecificCleanupChanges.concat(existingTxtRecords.map((record) => {
+            return {
+              Action: 'DELETE',
+              ResourceRecordSet: record
             }
-          })
+          }))
+
+          if (txtRecordValues.length > 0) {
+            domainSpecificSetupChanges.push({
+              Action: 'CREATE',
+              ResourceRecordSet: {
+                Name: domainName,
+                Type: 'TXT',
+                TTL: 300,
+                ResourceRecords: txtRecordValues.map((value) => { return { Value: '"' + value + '"' } })
+              }
+            })
+          }
         }
 
         if (!!verificationRecordToConfigure) {
