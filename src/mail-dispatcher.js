@@ -374,7 +374,7 @@ module.exports = class MailDispatcher {
           } while (domainsToWatch.length === 0)
 
           if(!!additionalSMTPCredentials && Array.isArray(additionalSMTPCredentials)) {
-            additionalSMTPCredentials.forEach((val) => {
+            additionalSMTPCredentials.forEach(async (val) => {
               if(!!val.login && val.login.length >= 3 && !!val.password && val.password.length >= 5 && val.password.length <= 32) {
                 await self.mailgun.post('/domains/' + domainConfig.name + '/credentials', val)
               } else {
