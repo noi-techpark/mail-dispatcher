@@ -312,7 +312,10 @@ module.exports = class MailDispatcher {
 
     for (var i in self.configuration.domains) {
       let domainToDeploy = self.configuration.domains[i]
+
       let domainName = domainToDeploy.domain
+      let domainSMTPPassword = domainToDeploy.smtp_password
+      let additionalSMTPCredentials = domainToDeploy.credentials
 
       self.logger.log('info', 'Processing domain: %s', domainName)
 
@@ -323,21 +326,24 @@ module.exports = class MailDispatcher {
 
         delete existingDomains[domainName]
 
-        if (domainEntry.domain.spam_action !== 'tag') {
-          await self.mailgun.delete('/domains/' + domainName)
+        /* 
+          only if existing domains spam-action !== tag (?)
+          to get rid of the spam_action-tag for all existing domains, we have to remove this check (?)
+          if (domainEntry.domain.spam_action !== 'tag') { 
+        */
+        await self.mailgun.delete('/domains/' + domainName)
 
-          var domainsToWatch = null
+        var domainsToWatch = null
 
-          do {
-            domainsToWatch = await self.mailgun.get('/domains')
-            domainsToWatch = domainsToWatch.items.filter((item) => item.name === domainName)
+        // wait until domain deletion is complete (mailgun sync?)
+        do {
+          domainsToWatch = await self.mailgun.get('/domains')
+          domainsToWatch = domainsToWatch.items.filter((item) => item.name === domainName)
+          await utils.sleep(500)
+        } while (domainsToWatch.length > 0)
 
-            await utils.sleep(500)
-          } while (domainsToWatch.length > 0)
-
-          domainEntry = false
-        }
-
+        domainEntry = false
+        // }
       } catch (err) {
         if (!!err.code && err.code !== 404) {
           self.logger.log('error', 'Error cleaning up domain "%s": %s', domainName, err.message || '(no additional error message)')
@@ -347,15 +353,41 @@ module.exports = class MailDispatcher {
       }
 
       try {
-        if (!domainEntry) {
-          domainEntry = await self.mailgun.post('/domains', {
-            name: domainName,
-            spam_action: 'tag'
-          })
+
+        let domainConfig = { name: domainName }
+
+        // if valid domain-wide credentials are present
+        if(!!domainSMTPPassword && domainSMTPPassword.length >= 5 && domainSMTPPassword.length <= 32) {
+          domainConfig.smtp_password = domainSMTPPassword
         }
+
+        if (!domainEntry) {
+          domainEntry = await self.mailgun.post('/domains', domainConfig)
+
+          var domainsToWatch = []
+
+          // wait until domain creation is complete (mailgun sync?)
+          do {
+            await utils.sleep(500)
+            domainsToWatch = await self.mailgun.get('/domains')
+            domainsToWatch = domainsToWatch.items.filter((item) => item.name === domainName)
+          } while (domainsToWatch.length === 0)
+
+          if(!!additionalSMTPCredentials && Array.isArray(additionalSMTPCredentials)) {
+            additionalSMTPCredentials.forEach((val) => {
+              if(!!val.login && val.login.length >= 3 && !!val.password && val.password.length >= 5 && val.password.length <= 32) {
+                await self.mailgun.post('/domains/' + domainConfig.name + '/credentials', val)
+              } else {
+                self.logger.log('error', 'Error setting up additional SMTP credentials (login.length > 3 && password.length between 5 & 32) for %s', val.login)
+              }
+            })
+          } else {
+            self.logger.log('info', 'No additional SMTP credentials required "%s"', domainName)
+          }
+        }
+
       } catch (err) {
         self.logger.log('error', 'Error setting up domain "%s": %s', domainName, err.message || '(no additional error message)')
-
         skippedDomains.push(domainName)
       }
 
@@ -466,6 +498,8 @@ module.exports = class MailDispatcher {
             senders = [].concat(senders, domainToDeploy.additionalSenders.map((sender) => 'include:' + sender))
           }
 
+          if(senders.length > 10) self.logger.log('warn', 'Resulting SPF-Record invalid (DNS-Lookups > 10)')
+ 
           txtRecordValues.push('v=spf1 ' + senders.join(' ') + ' ~all')
         }
 
