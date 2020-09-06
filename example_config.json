@@ -1,0 +1,57 @@
+{
+  "domains": [
+    {
+      "domain": "mg1.example.org",
+      "smtp_password" : "tesThing",
+      "credentials" : [
+        {
+          "login" : "alice@mg1.example.org",
+          "password" : "tesThingAlice"
+        },
+        {
+          "login" : "bob@mg1.example.org",
+          "password" : "tesThingBob"
+        }
+      ]
+    },
+    {
+      "domain": "mg2.example.org",
+      "additionalSenders":["form.example.org"],
+      "credentials" : [
+        {
+          "login" : "alice@mg2.example.org",
+          "password" : "tesThingAlice"
+        }
+      ]
+    },
+    {
+      "domain": "mg3.example.org",
+      "additionalSenders":[
+        "form1.example.org", 
+        "form2.example.org", 
+        "form3.example.org", 
+        "form4.example.org"
+      ],
+      "credentials" : [
+        {
+          "login" : "alice@mg2.example.org",
+          "password" : "tesThingAlice"
+        }
+      ]
+    },
+    {
+      "domain": "mg4.example.org"
+    }
+  ],
+  "aws": {
+    "accessKey": "",
+    "secretKey": ""
+  },
+  "mailgun": {
+    "apiKey":"",
+    "region":"eu"
+  },
+  "mappings":"mapping.json",
+  "removeMissingDomains": false,
+  "debug": false
+}
