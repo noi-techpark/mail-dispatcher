@@ -12,7 +12,7 @@ This application requires
 - Shell/Terminal
 - Node.js (8.10 or greater) and Yarn
 - AWS Account
-- MailGun Account
+- MailGun Account (Premium Tier with routes enabled)
 
 ## Setup
 
@@ -54,8 +54,18 @@ The following snippet is an example configuration file. Please make sure to repl
       },
       "domains": [
         {
-          "domain": "example.org",
-          "blockSpam": true
+          "domain": "mg1.example.org",
+          "smtp_password" : "tesThing",
+          "credentials" : [
+            {
+              "login" : "alice@mg1.example.org",
+              "password" : "tesThingAlice"
+            },
+            {
+              "login" : "bob@mg1.example.org",
+              "password" : "tesThingBob"
+            }
+          ]
         },
         {
           "domain": "mails.example.com",
@@ -65,7 +75,8 @@ The following snippet is an example configuration file. Please make sure to repl
         },
         "anotherexample.com"
       ],
-      
+      "removeMissingDomains": false,
+      "debug": false
       "mappings": {
         "info@example.org": [ "...", "..." ],
         "info@mails.example.com": [ "..." ]
@@ -100,13 +111,27 @@ Defines a list of recipients that will receive emails that don't match any of th
 #### Configuration property: domains
 
     Required: true
-    Type: array (objects with structure { "domain", "zone", "defaultTo", "blockSpam" } or strings)
+    Type: array (objects with structure { "domain", "zone", "defaultTo", "smtp_password", "credentials" } or strings)
 
 The domains enabled for forwarding, if only a string is supplied then the default options for the domain are used. If you use a subdomain, then you can define the hosted zone used on Route53 - otherwise the given domain name will be used.
 
 It is possible to define a default recipients mapping separately from the global configuration with `defaultTo`. If you just want to apply the global configuration, then you can specify nothing or just `"defaultTo": true` - on the other hand if you have a global configuration but you don't want to apply it to a specific domain, then `"defaultTo": false` is what you're looking for.
 
-By default, the spam will not be blocking but only "tagged" by MailGun's incoming email servers. Specifying `"blockSpam": true` will make sure spam emails won't be forwarded at all.
+#### Configuration property: removeMissingDomains
+
+    Required: false
+    Default: false
+    Type: bool
+
+If true, domains that are missing in the configuration but exist in your mailgun account will be removed from Mailgun during deployment (!)
+
+#### Configuration property: debug
+
+    Required: false
+    Default: false
+    Type: bool
+
+If true, verification step will be skipped
 
 #### Configuration property: mappings
 
@@ -115,7 +140,7 @@ By default, the spam will not be blocking but only "tagged" by MailGun's incomin
 
 The configuration of the mappings used when forwarding incoming emails. It is possible to directly specify the emails and their mapped recipients as a JSON object and/or use one or more path locations that contain JSON files, that can be also organised using nested subfolders.
 
-When choosing to organise the mappings using JSON files, it is obviously possible to use folders based on Git repositories.
+When choosing to organize the mappings using JSON files, it is obviously possible to use folders based on Git repositories.
 
 Regardless of their location, the mappings file(s) have to be structured as in the following example
 
@@ -152,9 +177,22 @@ Deploy the currently configured mappings to AWS and MailGun infrastructures. Whe
 
 When hosted zones are created from scratch on Route53 and the nameserver configuration is not automatically managed and updated, the nameserver hostnames are printed out on the console.
 
+Attention: All unlisted domains will be deleted from Mailgun
+
 ### mail-dispatcher clean
 
 Clean all related resources on AWS (DNS records) and MailGun (domains, routes). Eventually created hosted zones on Route53 are not removed/deleted.
+
+## Testing
+
+You can test this script with example domains (example.org). In this case Mailgun cannot verify the domains. Set the debug parameter to true to avoid the verification step.
+
+## important information
+
+Due to synchronization problems of the mailgun api this script should not be executed in sequence. please wait at least 15m between each execution to give mailgun enough time to think twice before answering your requests ;)
+This script does not handle these cases!
+
+**as always, make a backup copy of your current mailgun and aws configuration before using this script in your productive environment**
 
 ## Authors
 

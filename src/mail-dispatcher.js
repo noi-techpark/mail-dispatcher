@@ -1,3 +1,9 @@
+// TODO: Node.js: Unhandled promise rejections are deprecated.
+// TODO: Timeouts if waiting do-loops fail
+// TODO: Better error handling (mailgun api issues)
+// TODO: Split deploy-function into better readable parts
+// TODO: Set a constant dkim-selector to avoid remaining DNS entries in the zone files (PUT /domains/<domain>/dkim_selector)
+
 const async = require('async')
 const AWS = require('aws-sdk')
 const child_process = require('child_process')
@@ -326,11 +332,7 @@ module.exports = class MailDispatcher {
 
         delete existingDomains[domainName]
 
-        /* 
-          only if existing domains spam-action !== tag (?)
-          to get rid of the spam_action-tag for all existing domains, we have to remove this check (?)
-          if (domainEntry.domain.spam_action !== 'tag') { 
-        */
+        // TODO: Check for configuration changes, if no changes detected & domain is already verified then skip entire process
         await self.mailgun.delete('/domains/' + domainName)
 
         var domainsToWatch = null
@@ -343,7 +345,7 @@ module.exports = class MailDispatcher {
         } while (domainsToWatch.length > 0)
 
         domainEntry = false
-        // }
+
       } catch (err) {
         if (!!err.code && err.code !== 404) {
           self.logger.log('error', 'Error cleaning up domain "%s": %s', domainName, err.message || '(no additional error message)')
@@ -354,7 +356,9 @@ module.exports = class MailDispatcher {
 
       try {
 
-        let domainConfig = { name: domainName }
+        let domainConfig = { 
+          name: domainName
+        }
 
         // if valid domain-wide credentials are present
         if(!!domainSMTPPassword && domainSMTPPassword.length >= 5 && domainSMTPPassword.length <= 32) {
@@ -366,7 +370,7 @@ module.exports = class MailDispatcher {
 
           var domainsToWatch = []
 
-          // wait until domain creation is complete (mailgun sync?)
+          // wait until domain creation is complete (mailgun sync issues?)
           do {
             await utils.sleep(500)
             domainsToWatch = await self.mailgun.get('/domains')
@@ -374,15 +378,20 @@ module.exports = class MailDispatcher {
           } while (domainsToWatch.length === 0)
 
           if(!!additionalSMTPCredentials && Array.isArray(additionalSMTPCredentials)) {
-            additionalSMTPCredentials.forEach(async (val) => {
+            additionalSMTPCredentials.forEach(async(val) => {
               if(!!val.login && val.login.length >= 3 && !!val.password && val.password.length >= 5 && val.password.length <= 32) {
-                await self.mailgun.post('/domains/' + domainConfig.name + '/credentials', val)
+                try {
+                  let result = await self.mailgun.post('/domains/' + domainConfig.name + '/credentials', val)
+                  self.logger.log('info', '  Setting up domain credentials for "%s": %s', val.login, result.message || '(no additional result message)')
+                } catch (err) {
+                  self.logger.log('warn', '  Error setting up domain credentials "%s": %s', domainName, err.message || '(no additional error message)')
+                }
               } else {
                 self.logger.log('error', 'Error setting up additional SMTP credentials (login.length > 3 && password.length between 5 & 32) for %s', val.login)
               }
             })
           } else {
-            self.logger.log('info', 'No additional SMTP credentials required "%s"', domainName)
+            self.logger.log('info', 'No additional SMTP credentials required for "%s"', domainName)
           }
         }
 
@@ -418,6 +427,8 @@ module.exports = class MailDispatcher {
         let hostedZones = hostedZonesResult.HostedZones.filter((zone) => hostedZoneName === zone.Name.slice(0, -1))
 
         if (hostedZones.length === 0) {
+          self.logger.log('info', 'Creating hosted zone @ route53...')
+
           let newHostedZoneResult = await self.route53.createHostedZone({
             CallerReference: hostedZoneName + '-' + (new Date().getTime()),
             Name: hostedZoneName,
@@ -436,6 +447,7 @@ module.exports = class MailDispatcher {
 
           self.logger.log('info', 'Configured hosted zone for "%s": %s', hostedZoneName, _.pluck(_.flatten(nameserverRecords.map((recordSet) => recordSet.ResourceRecords)), 'Value').join(', '))
         } else {
+          self.logger.log('info', 'Hosted zone exists...')
           hostedZone = hostedZones[0]
         }
 
@@ -498,9 +510,13 @@ module.exports = class MailDispatcher {
             senders = [].concat(senders, domainToDeploy.additionalSenders.map((sender) => 'include:' + sender))
           }
 
-          if(senders.length > 10) self.logger.log('warn', 'Resulting SPF-Record invalid (DNS-Lookups > 10)')
- 
-          txtRecordValues.push('v=spf1 ' + senders.join(' ') + ' ~all')
+          // 5 because mailgun itself sets 3 nested includes and additionalSenders usually include mx and a
+          if(senders.length >= 5) {
+            self.logger.log('warn', 'Resulting spf record probably not correct. Necessary dns-lookups > 10. Reduce the number of additional ')
+            self.logger.log('warn', '  skipping: v=spf1 ' + senders.join(' ') + ' ~all')
+          } else {
+            txtRecordValues.push('v=spf1 ' + senders.join(' ') + ' ~all')
+          }
         }
 
         if (!!domainToDeploy.additionalTxtRecords) {
@@ -599,9 +615,17 @@ module.exports = class MailDispatcher {
     self.logger.log('info', 'Applying changes to DNS records')
 
     if (!_.isEmpty(cleanupChanges)) {
+      self.logger.log('info', 'Committing DNS cleanup changes...')
+      self.logger.log('info', '  Changes generally propagate to all Route 53 name servers within 60 seconds.')
+
       let count = 0
 
       for (var zoneId in cleanupChanges) {
+
+        cleanupChanges[zoneId].forEach((val)=>{
+          self.logger.log('info', '    Action: %s, Type: %s, Name: %s', val.Action, val.ResourceRecordSet.Type, val.ResourceRecordSet.Name)
+        })
+
         let outcome = await self.route53.changeResourceRecordSets({
           HostedZoneId: zoneId,
           ChangeBatch: {
@@ -620,9 +644,20 @@ module.exports = class MailDispatcher {
     }
 
     if (!_.isEmpty(setupChanges)) {
+      self.logger.log('info', 'Committing DNS setup changes...')
+     
+
       let count = 0
 
-      for (var zoneId in setupChanges) {
+      // TODO: DKIM-Entries could be created multiple times (if mailgun dkim selector changes). Technically this should be ok.
+      for (var zoneId in setupChanges) {        
+        self.logger.log('info', 'Changing %d records for zoneId %s', setupChanges[zoneId].length, zoneId)
+        self.logger.log('info', '  Changes generally propagate to all Route 53 name servers within 60 seconds.')
+        
+        setupChanges[zoneId].forEach((val)=>{
+          self.logger.log('info', '    Action: %s, Type: %s, Name: %s', val.Action, val.ResourceRecordSet.Type, val.ResourceRecordSet.Name)
+        })        
+        
         let outcome = await self.route53.changeResourceRecordSets({
           HostedZoneId: zoneId,
           ChangeBatch: {
@@ -640,7 +675,9 @@ module.exports = class MailDispatcher {
       self.logger.log('info', 'Created %d records', count)
     }
 
-    if (!_.isEmpty(existingDomains)) {
+    if (!_.isEmpty(existingDomains) && self.configuration.removeMissingDomains) {
+      self.logger.log('warn', 'Removing left-over domains from Mailgun...')
+
       try {
         for (var domainName in existingDomains) {
           await self.mailgun.delete('/domains/' + domainName)
@@ -750,7 +787,7 @@ module.exports = class MailDispatcher {
 
       let domainNamesToVerify = domainsToVerify.map((domain) => domain.name)
 
-      if (domainNamesToVerify.length > 0) {
+      if (domainNamesToVerify.length > 0 && self.configuration.debug != true) {
         self.logger.log('info', 'Verifying domains: %s', domainNamesToVerify)
 
         let currentDomains = null
