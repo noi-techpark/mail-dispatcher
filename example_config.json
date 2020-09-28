@@ -3,6 +3,7 @@
     {
       "domain": "mg1.example.org",
       "smtp_password" : "tesThing",
+      "force" : true,
       "credentials" : [
         {
           "login" : "alice@mg1.example.org",
@@ -52,6 +53,9 @@
     "region":"eu"
   },
   "mappings":"mapping.json",
-  "removeMissingDomains": false,
+  "removeMissingDomains" : false,
+  "deleteExistingMailgunDomains" : false,
+  "resetDkimSelector" : false,
+  "loglevel" : "info",
   "debug": false
 }
