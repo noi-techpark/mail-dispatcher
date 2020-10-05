@@ -42,10 +42,15 @@ application
   .action(async () => {
     bootstrap(application, (instance) => {
       (async () => {
-        await instance.clean()
-      })()
-    })
-  })
+        try {
+          await instance.clean()
+        } catch (e) {
+          console.error('Unhandled fatal error, manual check required. Exit')
+          throw e;
+        }
+      })();
+    });
+  });
 
 application
   .command('deploy')
@@ -53,9 +58,14 @@ application
   .action(async () => {
     bootstrap(application, (instance) => {
       (async () => {
-        await instance.deploy()
-      })()
-    })
-  })
+        try {
+          await instance.deploy();
+        } catch (e) {
+          console.error('Unhandled fatal error, manual check required. Exit');
+          throw e;
+        }
+      })();
+    });
+  });
 
 application.parse(process.argv)

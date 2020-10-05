@@ -75,8 +75,11 @@ The following snippet is an example configuration file. Please make sure to repl
         },
         "anotherexample.com"
       ],
-      "removeMissingDomains": false,
-      "debug": false
+      "removeMissingDomains" : false,
+      "deleteExistingMailgunDomains" : false,
+      "resetDkimSelector" : false,
+      "loglevel" : "info",
+      "debug" : true,
       "mappings": {
         "info@example.org": [ "...", "..." ],
         "info@mails.example.com": [ "..." ]
@@ -111,7 +114,7 @@ Defines a list of recipients that will receive emails that don't match any of th
 #### Configuration property: domains
 
     Required: true
-    Type: array (objects with structure { "domain", "zone", "defaultTo", "smtp_password", "credentials" } or strings)
+    Type: array (objects with structure { "domain", "zone", "defaultTo", "smtp_password", "credentials", "force" } or strings)
 
 The domains enabled for forwarding, if only a string is supplied then the default options for the domain are used. If you use a subdomain, then you can define the hosted zone used on Route53 - otherwise the given domain name will be used.
 
@@ -124,6 +127,15 @@ It is possible to define a default recipients mapping separately from the global
     Type: bool
 
 If true, domains that are missing in the configuration but exist in your mailgun account will be removed from Mailgun during deployment (!)
+
+#### Configuration property: deleteExistingMailgunDomains
+
+    Required: false
+    Default: false
+    Type: bool
+
+if true, configured domains are deleted by Mailgun and rebuilt from scratch (normal behaviour before 2.0.0). if this parameter is missing or false, existing domains are reused by mailgun. 
+
 
 #### Configuration property: debug
 
@@ -186,11 +198,6 @@ Clean all related resources on AWS (DNS records) and MailGun (domains, routes). 
 ## Testing
 
 You can test this script with example domains (example.org). In this case Mailgun cannot verify the domains. Set the debug parameter to true to avoid the verification step.
-
-## important information
-
-Due to synchronization problems of the mailgun api this script should not be executed in sequence. please wait at least 15m between each execution to give mailgun enough time to think twice before answering your requests ;)
-This script does not handle these cases!
 
 **as always, make a backup copy of your current mailgun and aws configuration before using this script in your productive environment**
 
