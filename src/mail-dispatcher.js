@@ -1050,7 +1050,7 @@ module.exports = class MailDispatcher {
       self.logger.log('info_mg', 'Creating %d routes...', routesToCreate.length)
 
       for (var i in routesToCreate) {
-        // await self.mailgun.post('/routes', routesToCreate[i])
+        await self.mailgun.post('/routes', routesToCreate[i])
       }
     } catch (err) {
       self.logger.log('error_mg', 'Error while creating routes: %s', err.message || '(no additional error message)')
@@ -1060,7 +1060,7 @@ module.exports = class MailDispatcher {
       self.logger.log('info_mg', 'Cleaning up %d routes...', _.keys(routes).length)
 
       for (var i in routes) {
-        // await self.mailgun.delete('/routes/' + routes[i].id)
+        await self.mailgun.delete('/routes/' + routes[i].id)
       }
     } catch (err) {
       self.logger.log('error_mg', 'Error while cleaning up routes: %s', err.message || '(no additional error message)')
