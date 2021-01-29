@@ -1,6 +1,7 @@
 // TODO: Node.js: Unhandled promise rejections are deprecated.
 // TODO: Timeouts if waiting do-loops fail
 // TODO: Split deploy-function into better readable parts
+// TODO: Check and implement Pagination for Mailgun API
 
 const AWS = require('aws-sdk')
 const fs = require('fs-extra')
@@ -303,7 +304,7 @@ module.exports = class MailDispatcher {
       await self.mailgun.delete('/domains/' + domains.items[i].name)
     }
 
-    let routes = await self.mailgun.get('/routes')
+    let routes = await self.mailgun.get('/routes', {limit:1000})
 
     self.logger.log('info_mg', 'Removing %d routes...', routes.items.length)
 
@@ -315,12 +316,35 @@ module.exports = class MailDispatcher {
 
     do {
       domains = await self.mailgun.get('/domains')
-      routes = await self.mailgun.get('/routes')
+      routes = await self.mailgun.get('/routes', {limit:1000})
 
       await utils.sleep(500)
     } while (domains.items.length > 0)
 
     self.logger.log('info_app', 'Cleanup completed.')
+  }
+
+  async _removeAllRoutesFromMailgun() {
+    const self = this;
+    
+    let routes = await self.mailgun.get('/routes', {limit:1000})
+
+    self.logger.log('info_mg', 'Removing %d routes...', routes.items.length)
+
+    if(self.configuration.debug != true) {
+      for (var i in routes.items) {
+        await self.mailgun.delete('/routes/' + routes.items[i].id)
+      }
+
+      self.logger.log('info_mg', 'Waiting for resources to be removed...')
+
+      do {
+        routes = await self.mailgun.get('/routes', {limit:1000})
+        await utils.sleep(500)
+      } while (routes.items.length > 0)
+    } else {
+      self.logger.log('info_mg', 'DRY RUN, removing %d routes', routes.items.length)
+    }
   }
 
   async _mailgunCreateDomain(domainEntry, domainConfig) {
@@ -372,7 +396,6 @@ module.exports = class MailDispatcher {
     }
   }
 
-  // simple check if mail delete action is required
   async _checkMailgunDomainStatus(newDomain, existingDomain) {
       let self = this;
 
@@ -803,7 +826,7 @@ module.exports = class MailDispatcher {
 
     self.logger.log('info_mg', 'Configuring mapping routes...')
 
-    let routes = await self.mailgun.get('/routes')
+    let routes = await self.mailgun.get('/routes', {limit:1000})
 
     routes = _.object(routes.items.map((route) => {
       return [ self.hashRoute(route), route ]
@@ -936,6 +959,112 @@ module.exports = class MailDispatcher {
     }
 
     self.logger.log('info_mg', 'Deployment completed!')
+  }
+
+  async routes() {
+    const self = this;
+
+    self.logger.log('info_mg', 'Configuring mapping routes...')
+
+    if(self.configuration.forceRouteDeletion == true) await this._removeAllRoutesFromMailgun()
+
+    let routes = await self.mailgun.get('/routes', {limit:1000})
+    
+    self.logger.log('info_mg', '%d existing routes...', _.size(routes.items))
+    
+    // existing routes without duplicates
+    routes = _.object(routes.items.map((route) => {
+      return [ self.hashRoute(route), route ]
+    }))
+
+    self.logger.log('info_mg', '%d existing routes without duplicates...', _.size(routes))
+
+    let routesToConfigure = []
+    let routesToCreate = []
+
+    // setup routes to configure
+    _.each(self.configuration.mappings, (recipients, email) => {
+      let action = [ 'forward("' + recipients.join(',') + '")', 'stop()' ]
+
+      routesToConfigure.push({
+        expression: 'match_recipient("' + email + '")',
+        action: action,
+        priority: 10
+      })
+
+      routesToConfigure.push({
+        expression: 'match_header("Cc", "' + email + '")',
+        action: action,
+        priority: 10
+      })
+
+      routesToConfigure.push({
+        expression: 'match_header("Bcc", "' + email + '")',
+        action: action,
+        priority: 10
+      })
+    })
+
+    self.logger.log('info_mg', '%d routes to configure from mappings...', routesToConfigure.length)
+
+    for (var i in self.configuration.domains) {
+      let domain = self.configuration.domains[i]
+      let domainName = self.configuration.domains[i].domain
+
+      if (!!domain.defaultTo) {
+        let action = [ 'forward("' + domain.defaultTo.join(',') + '")', 'stop()' ]
+
+        routesToConfigure.push({
+          expression: 'match_recipient(".*@' + domainName + '")',
+          action: action,
+          priority: 20
+        })
+
+        routesToConfigure.push({
+          expression: 'match_header("Cc", ".*@' + domainName + '")',
+          action: action,
+          priority: 20
+        })
+
+        routesToConfigure.push({
+          expression: 'match_header("Bcc", ".*@' + domainName + '")',
+          action: action,
+          priority: 20
+        })
+      }
+    }
+
+    self.logger.log('info_mg', '%d routes to configure from mappings and domains-settings...', routesToConfigure.length)
+
+    // do not create duplicates
+    for (var i in routesToConfigure) {
+      let hash = self.hashRoute(routesToConfigure[i])
+      if (_.has(routes, hash)) {
+        delete routes[hash]
+      } else {
+        routesToCreate.push(routesToConfigure[i])
+      }
+    }
+
+    try {
+      self.logger.log('info_mg', 'Creating %d routes...', routesToCreate.length)
+
+      for (var i in routesToCreate) {
+        // await self.mailgun.post('/routes', routesToCreate[i])
+      }
+    } catch (err) {
+      self.logger.log('error_mg', 'Error while creating routes: %s', err.message || '(no additional error message)')
+    }
+
+    try {
+      self.logger.log('info_mg', 'Cleaning up %d routes...', _.keys(routes).length)
+
+      for (var i in routes) {
+        // await self.mailgun.delete('/routes/' + routes[i].id)
+      }
+    } catch (err) {
+      self.logger.log('error_mg', 'Error while cleaning up routes: %s', err.message || '(no additional error message)')
+    }
   }
 
 }

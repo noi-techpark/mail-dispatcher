@@ -68,4 +68,20 @@ application
     });
   });
 
+application
+.command('routes')
+.description('Fully reset mailgun routes')
+.action(async () => {
+  bootstrap(application, (instance) => {
+    (async () => {
+      try {
+        await instance.routes();
+      } catch (e) {
+        console.error('Unhandled fatal error, manual check required. Exit');
+        throw e;
+      }
+    })();
+  });
+});
+
 application.parse(process.argv)
