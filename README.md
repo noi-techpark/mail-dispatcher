@@ -80,6 +80,7 @@ The following snippet is an example configuration file. Please make sure to repl
       "resetDkimSelector" : false,
       "loglevel" : "info",
       "debug" : true,
+      "forceRouteDeletion" : true,
       "mappings": {
         "info@example.org": [ "...", "..." ],
         "info@mails.example.com": [ "..." ]
@@ -171,6 +172,7 @@ The `mail-dispatcher` executable provides multiple sub-commands, namely
 * help
 * deploy
 * clean
+* routes
 
 The following options are available for all sub-commands
 
@@ -190,6 +192,14 @@ Deploy the currently configured mappings to AWS and MailGun infrastructures. Whe
 When hosted zones are created from scratch on Route53 and the nameserver configuration is not automatically managed and updated, the nameserver hostnames are printed out on the console.
 
 Attention: All unlisted domains will be deleted from Mailgun
+
+### mail-dispatcher routes
+
+Reset all routes at Mailgun. All existing routes are deleted (if config.debug != true && config.forceRouteDeletion == true) and regenerated based on the current configuration. All other settings/configurations remain untouched.
+
+Quick way to correct discrepancies between existing routes and configuration without having to provoke a complete reset of the entire setup. Can and should be used once/manually if required.
+
+Attention: This software does not support pagination at Mailgun and the hard cap for routes is 1000. This should be sufficient for the application usecase. If more than 1000 routes are configured, discrepancies may occur. In this case, routes may be created twice.
 
 ### mail-dispatcher clean
 
