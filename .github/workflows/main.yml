@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+env:
+  CONFIG: '${{ secrets.CONFIG }}'
+  MAPPING: '${{ secrets.MAPPING }}'
+
 jobs:
   deploy:
     runs-on: ubuntu-20.04
@@ -14,8 +18,8 @@ jobs:
 
     - name: Configure
       run: |
-        cat "${{ secrets.CONFIG }}" > config.json
-        cat "${{ secrets.MAPPING }}" > mapping.json
+        echo "${{ env.CONFIG }}" > config.json
+        echo "${{ env.MAPPING }}" > mapping.json
         
     - name: Update Dependencies
       run: npm install
