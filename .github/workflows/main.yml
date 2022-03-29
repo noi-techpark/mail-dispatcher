@@ -1,0 +1,27 @@
+name: CD
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-20.04
+    if: github.ref == 'refs/heads/main'
+    concurrency: deploy
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Configure
+      run: |
+        cat "${{ secrets.CONFIG }}" > config.json
+        cat "${{ secrets.MAPPING }}" > mapping.json
+        
+    - name: Update Dependencies
+      run: npm install
+
+    - name: Setup
+      run: ./mail-dispatcher setup
+
+    - name: Cleanup
+      run: rm config.json mapping.json
