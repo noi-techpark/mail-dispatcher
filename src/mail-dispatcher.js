@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: NOI Techpark <digital@noi.bz.it>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // TODO: Node.js: Unhandled promise rejections are deprecated.
 // TODO: Timeouts if waiting do-loops fail
 // TODO: Split deploy-function into better readable parts
