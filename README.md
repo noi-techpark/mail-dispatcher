@@ -6,6 +6,8 @@ SPDX-License-Identifier: CC0-1.0
 
 # MAIL DISPATCHER
 
+![REUSE Compliance](https://github.com/noi-techpark/mail-dispatcher/actions/workflows/reuse.yml/badge.svg)
+
 ## Description
 
 The repository contains a mail dispatcher based on [MailGun's](https://www.mailgun.com) routing functionality for domains managed on [AWS's Route53](https://aws.amazon.com/route53/) in order to map and forward mails sent to aliases or mailing lists.
