@@ -6,7 +6,7 @@ SPDX-License-Identifier: CC0-1.0
 
 # MAIL DISPATCHER
 
-![REUSE Compliance](https://github.com/noi-techpark/mail-dispatcher/actions/workflows/reuse.yml/badge.svg)
+[![REUSE Compliance](https://github.com/noi-techpark/mail-dispatcher/actions/workflows/reuse.yml/badge.svg)](https://github.com/noi-techpark/odh-docs/wiki/REUSE#badges)
 
 ## Description
 
